@@ -1,0 +1,15 @@
+*.Rapp.history
+*.Rproj
+*.Rhistory
+*.RData
+*.Ruserdata
+.DS_Store
+*.Rproj.user/
+Readings/
+Reports/
+.Rproj.user
+Writing/
+*.key
+*.xlsx
+R/*.sas
+R/*.do
