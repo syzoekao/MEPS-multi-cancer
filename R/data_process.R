@@ -14,111 +14,450 @@ source("R/function.R")
 options(survey.lonely.psu = "adjust")
 
 data_path <- "MEPS data/"
-yr_vec <- paste0(c(2:18))
+yr_vec <- paste0(c(8:18))
 yr_vec <- ifelse(nchar(yr_vec) == 1, paste0("0", yr_vec), yr_vec)
 
-yr_df <- mclapply(yr_vec, function(x) {
-  get_MEPS_annual(yr = x, data_path = data_path)
+system.time(
+  yr_df <- mclapply(yr_vec, function(x) {
+    get_fyc_annual(yr = x, data_path = data_path)
+  }, mc.cores = 6)
+)
+
+fyc_all <- rbindlist(yr_df, use.names = T)
+fyc_all[, `:=` (perwt = perwtf / (max(svy_year) - min(svy_year) + 1), 
+                no_cancer = 1 - can_any, 
+                sex_recode = factor(sex), 
+                edu_recode = ifelse(edu != "Some college or more", 
+                                    ">=some colloege", "<=high school"), 
+                ins_recode2 = ifelse(ins_recode == "1.Young, Any private", "<65, any private", 
+                                     ifelse(ins_recode %in% c("2.Young, Public only", "3.Young, Uninsured"), "<65, other", 
+                                            ifelse(ins_recode %in% c("4.65+, Medicare with all others", "5.65+, Any private, TRICARE/CHAMPVA"), 
+                                                   "65+, medicare and private","65+, other"))), 
+                region_recode = factor(region_recode),
+                age_two_group = ifelse(ageg != "0-17", "18-85", "0-17"), 
+                person = 1, 
+                tmp_marry = NULL, 
+                tmp_marry_rd = NULL)]
+levels(fyc_all$sex_recode) <- c("male", "female")
+levels(fyc_all$region_recode) <- c("northeast", "midwest", "south", "west")
+
+output_list <- list()
+plot_list <- list()
+
+#### Sample size by survey year and by age group
+n_by_year <- fyc_all[, .N, by = .(svy_year)]
+n_by_age <- fyc_all[, .N, by = .(ageg)][order(ageg)]
+n_by_age_year <- fyc_all[, .N, 
+                         by = .(svy_year, age65)][
+                           order(age65, svy_year)]
+
+output_list$raw_counts$n_by_year <- n_by_year
+output_list$raw_counts$n_by_age <- n_by_age
+output_list$raw_counts$n_by_age_year <- n_by_age_year
+
+
+age_color <- c("yellowgreen", "deepskyblue", "tomato")
+
+uwt_n_by_age_year <- ggplot(n_by_age_year) + 
+  geom_line(aes(x = svy_year, y = N / 1000, color = age65), 
+            size = 1) + 
+  geom_point(aes(x = svy_year, y = N / 1000, color = age65), 
+             shape = 21, fill = "white", size = 2, stroke = 1.5) + 
+  xlab("survey year") + 
+  ylab("sample size (1,000 people)") + 
+  ggtitle("Sample size") + 
+  scale_color_manual(values = age_color) + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  theme_bw() +
+  theme(legend.positio = "bottom")
+
+plot_list$uwt_n_by_age_year <- uwt_n_by_age_year
+
+#### Check important variables by year
+dmg_ls <- c("sex_recode", "race_recode", "region_recode", "edu_recode", "ins_recode2", 
+            "married", "faminc")
+
+dmg_tab <- lapply(dmg_ls, function(x) {
+  if (x != "faminc") {
+    by_cate <- c("svy_year", x)
+    out <- fyc_all[, .N, by = by_cate]
+    out <- out[order(svy_year, eval(parse(text = paste0(x))))]
+    tmp_form <- as.formula(paste0("svy_year ~ ", x))
+    dcast(out, tmp_form) 
+  } else {
+    by_cate <- c("svy_year")
+    out <- fyc_all[, list(m_faminc = mean(eval(parse(text = paste0(x))))), by = by_cate]
+    out <- out[order(svy_year)]
+    out
+  }
+})
+names(dmg_tab) <- dmg_ls
+
+output_list$dmg_tab <- dmg_tab
+
+exp_ls <- c(paste0("tot", c("exp", "slf", "prv", "mcr", "mcd", "otr")), 
+            paste0(c("obv", "opt", "amb", "ipt", "rx", "ert", "hha", "hhn", "dvt", "vis", "oth"), "exp"), 
+            "tototr2")
+
+exp_tab <- lapply(exp_ls, function(x) {
+  by_cate <- c("svy_year")
+  out <- fyc_all[, list(m_exp = mean(eval(parse(text = paste0(x))))), by = by_cate]
+  out <- out[order(svy_year)]
+  setnames(out, c("svy_year", "exp"))
+  out[, type := x]
+})
+names(exp_tab) <- exp_ls
+
+exp_tab <- rbindlist(exp_tab)
+exp_tab_wide <- dcast(exp_tab, svy_year ~ type, value.var = "exp")
+
+output_list$exp_tab <- exp_tab_wide
+
+tsdx_ls <- paste0("tsdx_", c("colrec", "breast", "cervix", "prosta", "lung", "melano", "sknm", "allskin"))
+
+tsdx_tab <- lapply(tsdx_ls, function(x) {
+  by_cate <- c("svy_year")
+  out <- fyc_all[, list(m_tsdx = mean(eval(parse(text = paste0(x))), na.rm = T)), by = by_cate]
+  out <- out[order(svy_year)]
+  setnames(out, c("svy_year", "tsdx"))
+  out[, type := x]
+})
+names(tsdx_tab) <- tsdx_ls
+
+tsdx_tab <- rbindlist(tsdx_tab)
+tsdx_tab_wide <- dcast(tsdx_tab, svy_year ~ type, value.var = "tsdx")
+
+output_list$tsdx_tab <- tsdx_tab_wide
+
+prod_ls <- c("ddnwrk_recode", "ddbdys_recode", "totddl", "empst", "empst2", "unable", "unable2", "unable3")
+
+prod_tab <- lapply(prod_ls, function(x) {
+  by_cate <- c("svy_year")
+  out <- fyc_all[, list(m_prod = mean(eval(parse(text = paste0(x))), na.rm = T)), by = by_cate]
+  out <- out[order(svy_year)]
+  setnames(out, c("svy_year", "prod"))
+  out[, type := x]
+})
+names(prod_tab) <- prod_ls
+
+prod_tab <- rbindlist(prod_tab)
+prod_tab_wide <- dcast(prod_tab, svy_year ~ type, value.var = "prod")
+
+output_list$prod_tab <- prod_tab_wide
+
+
+#### Cancer sample by demographics
+can_cols <- c("can_melano", "can_nonmel", "can_skindk", 
+              "can_skinnm", "can_allskin", 
+              "can_lung", "can_colrec", 
+              "can_prosta", "can_breast", "can_cervix", 
+              "can_any", "can_mult")
+
+cancer_names <- c("melanoma", "NMSC", "unknown skin", 
+                  "NMSC/unknown", "all skin", 
+                  "lung", "colorectal", 
+                  "prostate", "breast", "cervical", 
+                  "any", "multiple")
+
+fyc_all[, `:=` (can_na = ifelse(!is.na(age65) & is.na(can_any), 1, 0))]
+
+calc_freq_by_char <- function(x, dt) {
+  if (x == "overall") {
+    out <- dt[ageg != "0-17", 
+              lapply(.SD, sum, na.rm = T), 
+              .SDcols = c(can_cols, "no_cancer")]
+    out <- out[, lapply(.SD, format, big.mark = ","), .SDcols = c(can_cols, "no_cancer")]
+    out[, `:=` (category = "overall", 
+                level = "N")]
+    setcolorder(out, c("category", "level", can_cols, "no_cancer"))
+  } else {
+    out <- dt[ageg != "0-17", 
+              lapply(.SD, sum, na.rm = T), 
+              by = c(x), 
+              .SDcols = c(can_cols, "no_cancer")][
+                order(eval(parse(text = paste0(x))))]
+    out <- melt(out, id.vars = x)
+    out[, pct := paste0(round(100 * value / sum(value), 1), "%"), by = c("variable")]
+    out[, n_pct := paste0(format(value, big.mark = ","), " (", pct, ")")]
+    tmp_fml<- as.formula(paste0(x, " ~ variable"))
+    out_wide <- dcast(out, tmp_fml, value.var = "n_pct")
+    out_wide[, `:=` (category = x)]
+    setnames(out_wide, x, "level")
+    setcolorder(out_wide, c("category", "level", can_cols, "no_cancer"))
+  }
+}
+
+tmp_ls <- c("overall", "ageg", "sex_recode", "race_recode", "edu_recode", "married", "npec_recode", 
+       "ins_recode2", "region_recode")
+
+cancer_by_char <- lapply(tmp_ls, calc_freq_by_char, dt = fyc_all)
+cancer_by_char <- rbindlist(cancer_by_char)
+
+output_list$cancer_by_char <- cancer_by_char
+
+### By survey year
+
+cancer_by_svy_ct <- fyc_all[ageg != "0-17", 
+                            lapply(.SD, sum, na.rm = T), 
+                            by = .(svy_year), 
+                            .SDcols = c(can_cols)][
+                              order(svy_year)]
+
+ct_long <- melt(cancer_by_svy_ct, id = c("svy_year"))
+levels(ct_long$variable) <- c(cancer_names)
+output_list$cancer_by_svy <- cancer_by_svy_ct
+
+uwt_N_by_svy_can <- ggplot(data = ct_long, 
+                           aes(y = value, x = svy_year)) + 
+  geom_bar(# aes(color = age_group), 
+           color = "yellowgreen", 
+           fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  # scale_color_manual(values = age_color[1]) + 
+  facet_wrap(.~variable, ncol = 3, scales = "free_y") +
+  xlab("Survey Year") + 
+  ylab("Frequency") + 
+  ggtitle("Number of Cancer Survivors 2008-2018 (unweighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+plot_list$uwt_N_by_svy_can <- uwt_N_by_svy_can
+
+## By survey year and age
+cancer_by_svy_age65_ct <- fyc_all[, lapply(.SD, sum, na.rm = T), 
+                           by = .(svy_year, age65), 
+                           .SDcols = c(can_cols, "no_cancer", "can_na")][
+                             order(svy_year, age65)]
+
+ct_long <- melt(cancer_by_svy_age65_ct, id = c("svy_year", "age65"))
+levels(ct_long$variable) <- c(cancer_names, "no cancer", "missing")
+ct_long <- ct_long[!variable %in% c("no cancer", "missing")]
+setnames(ct_long, "age65", "age_group")
+
+output_list$cancer_by_svy_age_group <- cancer_by_svy_age65_ct[age65 != "0-17"]
+
+uwt_N_by_age_can <- ggplot(data = ct_long[age_group != "0-17"], 
+       aes(y = value, x = svy_year)) + 
+  geom_bar(aes(color = age_group), 
+           fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  scale_color_manual(values = age_color[-1]) + 
+  facet_wrap(.~variable, ncol = 3, scales = "free_y") +
+  xlab("Survey Year") + 
+  ylab("Frequency") + 
+  ggtitle("Number of Cancer Survivors 2008-2018 (unweighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+plot_list$uwt_N_by_age_can <- uwt_N_by_age_can
+
+## By survey year and sex
+cancer_by_svy_sex_ct <- fyc_all[age65 != "0-17", lapply(.SD, sum, na.rm = T), 
+                                  by = .(svy_year, sex_recode), 
+                                  .SDcols = c(can_cols, "no_cancer", "can_na")][
+                                    order(svy_year, sex_recode)]
+
+ct_long <- melt(cancer_by_svy_sex_ct, id = c("svy_year", "sex_recode"))
+levels(ct_long$variable) <- c(cancer_names, "no cancer", "missing")
+ct_long <- ct_long[!variable %in% c("no cancer", "missing")]
+setnames(ct_long, "sex_recode", "sex")
+
+output_list$cancer_by_svy_sex <- cancer_by_svy_sex_ct
+
+uwt_N_by_sex_can <- ggplot(data = ct_long, 
+                           aes(y = value, x = svy_year)) + 
+  geom_bar(aes(color = sex), 
+           fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  scale_color_manual(values = age_color[-1]) + 
+  facet_wrap(.~variable, ncol = 3, scales = "free_y") +
+  xlab("Survey Year") + 
+  ylab("Frequency") + 
+  ggtitle("Number of Cancer Survivors 2008-2018 (unweighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+plot_list$uwt_N_by_sex_can <- uwt_N_by_sex_can
+
+
+
+## Adjust population using survey weight
+
+calc_weighted_count <- function(cancerx, cond = NULL, svyds) {
+  tmp_fml <- paste0("~ svy_year + ", cancerx)
+  if (!is.null(cond)) tmp_fml <- paste0(tmp_fml, " + ", cond) 
+  tmp_fml <- as.formula(tmp_fml)
+  out <- svyby(~person, 
+               by = tmp_fml, 
+               FUN = svytotal, design = svyds)
+  out <- data.table(out)
+  setnames(out, cancerx, "tmp")
+  out <- out[tmp == 1]
+  out[, `:=` (tmp = NULL, 
+              cancer_type = cancerx)]
+}
+
+svyds<- svydesign(
+  id = ~varpsu,
+  strata = ~varstr,
+  weights = ~perwt,
+  data = fyc_all,
+  survey.lonely.psu="adjust", 
+  nest = TRUE)
+
+svy_tot_can <- mclapply(can_cols, function(x, cond = "age_two_group") {
+  calc_weighted_count(cancerx = x, cond = cond, svyds = svyds)
 }, mc.cores = 5)
 
-cond_df <- rbindlist(lapply(yr_df, "[[", 1))
-cond_df[, `:=` (year = as.numeric(year))]
-cond_df[, year_cate := ifelse(year <= 2006, "2002-2006", 
-                             ifelse(year > 2006 & year <= 2011, "2007-2011", "2012-2018"))]
-cond_df[, PERWT_new := ifelse(year_cate == "2002-2006", PERWT / (2006 - 2002 + 1), 
-                              ifelse(year_cate == "2007-2011", PERWT / (2011 - 2007 + 1), 
-                                     PERWT / (2018 - 2012 + 1)))]
+cancer_recode_key <- cancer_names
+names(cancer_recode_key) <- can_cols
 
+svy_tot_can <- rbindlist(svy_tot_can)
+svy_tot_can$cancer_type <- recode(svy_tot_can$cancer_type, !!!cancer_recode_key)
+svy_tot_can$cancer_type <- factor(svy_tot_can$cancer_type, levels = cancer_names)
+svy_tot_can <- svy_tot_can[age_two_group != "0-17"]
 
-src_df <- rbindlist(lapply(yr_df, "[[", 1))
-src_df[, `:=` (year = as.numeric(year))]
-src_df[, year_cate := ifelse(year <= 2006, "2002-2006", 
-                              ifelse(year > 2006 & year <= 2011, "2007-2011", "2012-2018"))]
-src_df[, PERWT_new := ifelse(year_cate == "2002-2006", PERWT / (2006 - 2002 + 1), 
-                              ifelse(year_cate == "2007-2011", PERWT / (2011 - 2007 + 1), 
-                                     PERWT / (2018 - 2012 + 1)))]
-
-## Define survey design and calculate estimates --------------------------------
-
-PERSdsgn <- svydesign(
-  id = ~VARPSU,
-  strata = ~VARSTR,
-  weights = ~PERWT,
-  data = cond_df,
-  survey.lonely.psu="adjust", 
-  nest = TRUE)
-
-
-# Totals (people, events, expenditures)
-raw_totals <- cond_df %>% 
-  group_by(year, Condition) %>%
-  summarize(persons = n()) %>%
-  ungroup()
-
-g1 <- ggplot(data = raw_totals) + 
-  geom_point(aes(x = year, y = persons, color = Condition), 
-             shape = 21, stroke = 1.5, size = 2) +
-  scale_y_continuous(labels = scales::comma) + 
-  ggtitle("Number of individuals treated with cancer (unweighted)") +
+wt_N_by_svy_can <- ggplot(data = svy_tot_can, 
+                          aes(y = person / 1000, x = svy_year)) + 
+  geom_bar(color = "yellowgreen", fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (person - 2 * se) / 1000, ymax = (person + 2 * se) / 1000),
+                color = "yellowgreen", width = 0, position = position_dodge(0.75)) +  
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  xlab("Survey Year") + 
+  ylab("1,000 peope") + 
+  ggtitle("Number of Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
   theme_bw() + 
-  theme(legend.position = "bottom")
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
 
-totals <- svyby(~persons, 
-                by = ~year + Condition, 
-                FUN = svytotal, design = PERSdsgn)
+svy_tot_can[, n_se := paste0(format(round(person), big.mark = ","), "<br>(",
+                             format(round(se), big.mark = ","), ")")]
+svy_tot_can_wide <- dcast(svy_tot_can, svy_year ~ cancer_type, value.var = "n_se")
 
-g2 <- ggplot(data = totals) + 
-  geom_point(aes(x = year, y = persons, color = Condition), 
-             shape = 21, stroke = 1.5, size = 2) +
-  scale_y_continuous(labels = scales::comma) + 
-  ggtitle("Number of individuals treated with cancer (weighted)") +
+output_list$wt_N_by_svy_can <- svy_tot_can_wide
+
+plot_list$wt_N_by_svy_can <- wt_N_by_svy_can
+
+
+svy_tot_age_can <- mclapply(can_cols, function(x, cond = "age65") {
+  calc_weighted_count(cancerx = x, cond = cond, svyds = svyds)
+}, mc.cores = 5)
+
+cancer_recode_key <- cancer_names
+names(cancer_recode_key) <- can_cols
+
+svy_tot_age_can <- rbindlist(svy_tot_age_can)
+svy_tot_age_can$cancer_type <- recode(svy_tot_age_can$cancer_type, !!!cancer_recode_key)
+svy_tot_age_can$cancer_type <- factor(svy_tot_age_can$cancer_type, levels = cancer_names)
+setnames(svy_tot_age_can, "age65", "age_group")
+svy_tot_age_can <- svy_tot_age_can[age_group != "0-17"]
+
+wt_N_by_age_can <- ggplot(data = svy_tot_age_can, 
+       aes(y = person / 1000, x = svy_year)) + 
+  geom_bar(aes(color = age_group), 
+           fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (person - 2 * se) / 1000, ymax = (person + 2 * se) / 1000, 
+                    color = age_group),
+                width = 0, position = position_dodge(0.75)) +  
+  scale_color_manual(values = age_color[-1]) + 
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  xlab("Survey Year") + 
+  ylab("1,000 peope") + 
+  ggtitle("Number of Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
   theme_bw() + 
-  theme(legend.position = "bottom")
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+svy_tot_age_can[, n_se := paste0(format(round(person), big.mark = ","), "<br>(",
+                                 format(round(se), big.mark = ","), ")")]
+svy_tot_age_can_wide <- dcast(svy_tot_age_can, svy_year + age_group ~ cancer_type, value.var = "n_se")
+
+output_list$wt_N_by_age_can <- svy_tot_age_can_wide
+
+plot_list$wt_N_by_age_can <- wt_N_by_age_can
+
+saveRDS(plot_list, "Results/plot_list.RDS")
+saveRDS(output_list, "Results/summary_out_list.RDS")
 
 
-# Totals (people, events, expenditures)
-PERSdsgn <- svydesign(
-  id = ~VARPSU,
-  strata = ~VARSTR,
-  weights = ~PERWT_new,
-  data = cond_df,
-  survey.lonely.psu="adjust", 
-  nest = TRUE)
+#### Adjust price
+
+p_ix <- read.csv(paste0(data_path, "price index.csv")) %>%
+  select(Year, GDP, CPI, PCE) %>% 
+  filter(Year >= 2008) %>% 
+  data.table()
+
+tmp <- p_ix[Year == 2018]
+
+p_ix[, `:=` (gdp2018 = tmp$GDP / GDP, 
+             cpi2018 = tmp$CPI / CPI, 
+             pce2018 = tmp$PCE / PCE, 
+             svy_year = Year, 
+             Year = NULL, 
+             GDP = NULL, 
+             CPI = NULL, 
+             PCE = NULL)]
+setkey(p_ix, "svy_year")
+
+fyc_all <- fyc_all[p_ix, on = "svy_year"]
+
+pce_tots <- c("faminc", "totslf", "totprv", "totmcr", "totmcd", "tototr", 
+              "ambexp", "iptexp", "rxexp", "tototr2")
+fyc_all[, `:=` (totexp_gdp = totexp * gdp2018)]
+fyc_all[, paste0(pce_tots, "_pce") := lapply(.SD, function(x) x * pce2018), 
+           .SDcols = pce_tots]
 
 
-totals <- svyby(~persons, 
-                by = ~year_cate + Condition, 
-                FUN = svytotal, design = PERSdsgn)
 
-PERSdsgn_skin <- svydesign(
-  id = ~VARPSU,
-  strata = ~VARSTR,
-  weights = ~PERWT_new,
-  data = cond_df %>% filter(Condition != "other cancer sites"),
-  survey.lonely.psu="adjust", 
-  nest = TRUE)
 
-totals_skin <- svyby(~persons, 
-                     by = ~year_cate, 
-                     FUN = svytotal, design = PERSdsgn_skin)
-totals_skin <- totals_skin %>% 
-  mutate(Condition = "all skin cancer")
+fyc_all[, lapply(.SD, mean, na.rm = T), 
+        .SDcols = c("totexp_gdp", pce_tots), 
+        .(svy_year)]
 
-totals <- bind_rows(totals, totals_skin) %>%
-  arrange(Condition, year_cate) %>%
-  mutate(rownames = NULL)
 
-saveRDS(list(fig = g1, totals = totals), 
-        "Results/results.RDS")
+fyc_all[, .N, .(svy_year, race_recode)][
+  order(svy_year, race_recode)][
+    , prop := N / sum(N), .(svy_year)
+  ] %>% View()
 
-# Mean expenditure per person with care
-means <- svyby(~pers_XP,
-               by = ~year_cate + Condition, 
-               FUN = svymean, design = PERSdsgn)
 
-# Median expenditure per person with care
-medians <- svyby(~pers_XP,
-                 by = ~year_cate + Condition, 
-                 FUN = svyquantile, quantiles = c(0.5), 
-                 design = PERSdsgn, ci = TRUE)
+
+
+
+
 
