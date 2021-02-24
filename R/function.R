@@ -267,7 +267,10 @@ get_fyc_annual <- function(yr, data_path) {
            tmp_marry = ifelse(marryx < 0, NA, tmp_marry), 
            married = ifelse(tmp_marry >= 1, "Married", "Not married"))
   
-  ### Poverty level
+  ### Poverty level (povcat)
+  pov_key <- c("1.Low", "1.Low", "1.Low", "2.Middle", "3.High")
+  names(pov_key) <- c(1:5)
+  FYC$income_level <- recode(FYC$povcat, !!!pov_key)
   
   ### Region
   FYC <- FYC %>%
@@ -275,12 +278,13 @@ get_fyc_annual <- function(yr, data_path) {
   
   ### Insurance
   ins_level_key <- c(`1` = "1.Young, Any private", `2` = "2.Young, Public only", `3` = "3.Young, Uninsured", 
-                     `4` = "4.65+, Medicare with all others", `5` = "5.65+, Any private, TRICARE/CHAMPVA", 
-                     `6` = "6.65+, Edited Medicaid/SCHIP, other public Type A, Type B", 
-                     `7` = "7.65+, No Medicare")
+                     `4` = "4.65+, Medicare Only", `5` = "5.65+, Medicare + Private", 
+                     `6` = "6.65+, Medicare + Public", `7` = "7.65+, Uninsured", 
+                     `8` = "8.65+, No Medicare")
   FYC <- FYC %>%
     mutate(ins_recode = inscov)
   FYC$ins_recode[FYC$age65 == ">=65"] <- 7
+  FYC$ins_recode[(FYC$age65 == ">=65") & ((FYC$mcrev == 2) & (FYC$prvev == 1 | FYC$triev == 1 | FYC$mcdev == 1 | FYC$opaev == 1 | FYC$opbev == 1))] <- 8
   FYC$ins_recode[((FYC$age65 == ">=65") & (FYC$mcrev == 1))] <- 4
   FYC$ins_recode[((FYC$age65 == ">=65") & (FYC$mcrev == 1)) & (FYC$prvev == 1 | FYC$triev == 1)] <- 5
   FYC$ins_recode[((FYC$age65 == ">=65") & (FYC$mcrev == 1)) & (FYC$mcdev == 1 | FYC$opaev == 1 | FYC$opbev == 1)] <- 6

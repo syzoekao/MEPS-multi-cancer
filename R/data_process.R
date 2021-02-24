@@ -35,6 +35,7 @@ fyc_all[, `:=` (perwt = perwtf / (max(svy_year) - min(svy_year) + 1),
                                                    "65+, medicare and private","65+, other"))), 
                 region_recode = factor(region_recode),
                 age_two_group = ifelse(ageg != "0-17", "18-85", "0-17"), 
+                married = ifelse(is.na(married), "Not married", married), 
                 person = 1, 
                 tmp_marry = NULL, 
                 tmp_marry_rd = NULL)]
@@ -74,8 +75,8 @@ uwt_n_by_age_year <- ggplot(n_by_age_year) +
 plot_list$uwt_n_by_age_year <- uwt_n_by_age_year
 
 #### Check important variables by year
-dmg_ls <- c("sex_recode", "race_recode", "region_recode", "edu_recode", "ins_recode2", 
-            "married", "faminc")
+dmg_ls <- c("sex_recode", "race_recode", "region_recode", "edu_recode", "ins_recode", 
+            "married", "income_level")
 
 dmg_tab <- lapply(dmg_ls, function(x) {
   if (x != "faminc") {
@@ -159,7 +160,8 @@ cancer_names <- c("melanoma", "NMSC", "unknown skin",
                   "prostate", "breast", "cervical", 
                   "any", "multiple")
 
-fyc_all[, `:=` (can_na = ifelse(!is.na(age65) & is.na(can_any), 1, 0))]
+fyc_all[, `:=` (can_na = ifelse(!is.na(age65) & is.na(can_any), 1, 0), 
+                npec_recode = ifelse(is.na(npec_recode), 0, npec_recode))]
 
 calc_freq_by_char <- function(x, dt) {
   if (x == "overall") {
@@ -188,7 +190,7 @@ calc_freq_by_char <- function(x, dt) {
 }
 
 tmp_ls <- c("overall", "ageg", "sex_recode", "race_recode", "edu_recode", "married", "npec_recode", 
-       "ins_recode2", "region_recode")
+       "ins_recode", "income_level", "region_recode")
 
 cancer_by_char <- lapply(tmp_ls, calc_freq_by_char, dt = fyc_all)
 cancer_by_char <- rbindlist(cancer_by_char)
@@ -411,9 +413,6 @@ output_list$wt_N_by_age_can <- svy_tot_age_can_wide
 
 plot_list$wt_N_by_age_can <- wt_N_by_age_can
 
-saveRDS(plot_list, "Results/plot_list.RDS")
-saveRDS(output_list, "Results/summary_out_list.RDS")
-
 
 #### Adjust price
 
@@ -442,22 +441,394 @@ fyc_all[, `:=` (totexp_gdp = totexp * gdp2018)]
 fyc_all[, paste0(pce_tots, "_pce") := lapply(.SD, function(x) x * pce2018), 
            .SDcols = pce_tots]
 
-
-
-
 fyc_all[, lapply(.SD, mean, na.rm = T), 
         .SDcols = c("totexp_gdp", pce_tots), 
         .(svy_year)]
 
 
-fyc_all[, .N, .(svy_year, race_recode)][
-  order(svy_year, race_recode)][
-    , prop := N / sum(N), .(svy_year)
-  ] %>% View()
+## Adjust total expense
+
+calc_weighted_avg_exp <- function(cancerx, outcome = "totexp_gdp", cond = NULL, svyds) {
+  tmp_fml <- paste0("~ svy_year + ", cancerx)
+  if (!is.null(cond)) tmp_fml <- paste0(tmp_fml, " + ", cond) 
+  tmp_fml <- as.formula(tmp_fml)
+  tmp_outcome <- as.formula(paste0("~ ", outcome))
+  out <- svyby(tmp_outcome, 
+               by = tmp_fml, 
+               FUN = svymean, design = svyds)
+  out <- data.table(out)
+  setnames(out, cancerx, "tmp")
+  out <- out[tmp == 1]
+  out[, `:=` (tmp = NULL, 
+              cancer_type = cancerx)]
+}
+
+svyds<- svydesign(
+  id = ~varpsu,
+  strata = ~varstr,
+  weights = ~perwt,
+  data = fyc_all,
+  survey.lonely.psu="adjust", 
+  nest = TRUE)
+
+svy_totexp_can <- mclapply(c(can_cols, "no_cancer"), function(x, outcome = "totexp_gdp", cond = "age_two_group") {
+  calc_weighted_avg_exp(cancerx = x, outcome = outcome, cond = cond, svyds = svyds)
+}, mc.cores = 5)
+
+cancer_recode_key <- c(cancer_names, "no cancer")
+names(cancer_recode_key) <- c(can_cols, "no_cancer")
+
+svy_totexp_can <- rbindlist(svy_totexp_can)
+svy_totexp_can$cancer_type <- recode(svy_totexp_can$cancer_type, !!!cancer_recode_key)
+svy_totexp_can$cancer_type <- factor(svy_totexp_can$cancer_type, levels = cancer_recode_key)
+svy_totexp_can <- svy_totexp_can[age_two_group != "0-17"]
+
+wt_totexp_by_svy_can <- ggplot(data = svy_totexp_can, 
+                          aes(y = totexp_gdp, x = svy_year)) + 
+  geom_bar(color = "yellowgreen", fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (totexp_gdp - 2 * se), ymax = (totexp_gdp + 2 * se)),
+                color = "yellowgreen", width = 0, position = position_dodge(0.75)) +  
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  xlab("Survey Year") + 
+  ylab("$") + 
+  ggtitle("Total Expense of Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  scale_y_continuous(labels = scales::comma) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+svy_totexp_can[, n_se := paste0(format(round(totexp_gdp), big.mark = ","), "<br>(",
+                             format(round(se), big.mark = ","), ")")]
+svy_totexp_can_wide <- dcast(svy_totexp_can, svy_year ~ cancer_type, value.var = "n_se")
+
+output_list$wt_totexp_by_svy_can <- svy_totexp_can_wide
+
+plot_list$wt_totexp_by_svy_can <- wt_totexp_by_svy_can
+
+
+svy_totexp_age_can <- mclapply(c(can_cols, "no_cancer"), function(x, outcome = "totexp_gdp", cond = "age65") {
+  calc_weighted_avg_exp(cancerx = x, outcome = outcome, cond = cond, svyds = svyds)
+}, mc.cores = 5)
+
+svy_totexp_age_can <- rbindlist(svy_totexp_age_can)
+svy_totexp_age_can$cancer_type <- recode(svy_totexp_age_can$cancer_type, !!!cancer_recode_key)
+svy_totexp_age_can$cancer_type <- factor(svy_totexp_age_can$cancer_type, levels = cancer_recode_key)
+svy_totexp_age_can <- svy_totexp_age_can[age65 != "0-17"]
+setnames(svy_totexp_age_can, "age65", "age_group")
+
+
+wt_totexp_by_age_can <- ggplot(data = svy_totexp_age_can, 
+                               aes(y = totexp_gdp, x = svy_year)) + 
+  geom_bar(aes(color = age_group), fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (totexp_gdp - 2 * se), ymax = (totexp_gdp + 2 * se), 
+                    color = age_group),
+                width = 0, position = position_dodge(0.75)) +  
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  scale_color_manual(values = age_color[-1]) + 
+  xlab("Survey Year") + 
+  ylab("$") + 
+  ggtitle("Total Expense of Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  scale_y_continuous(labels = scales::comma) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+svy_totexp_age_can[, v_se := paste0(format(round(totexp_gdp), big.mark = ","), "<br>(",
+                                format(round(se), big.mark = ","), ")")]
+svy_totexp_age_can_wide <- dcast(svy_totexp_age_can, 
+                                 svy_year + age_group ~ cancer_type, 
+                                 value.var = "v_se")
+
+output_list$wt_totexp_by_age_can <- svy_totexp_age_can_wide
+
+plot_list$wt_totexp_by_age_can <- wt_totexp_by_age_can
+
+
+## Medicare payment
+
+svy_totmcr_can <- mclapply(c(can_cols, "no_cancer"), function(x, outcome = "totmcr_pce", cond = "age_two_group") {
+  calc_weighted_avg_exp(cancerx = x, outcome = outcome, cond = cond, svyds = svyds)
+}, mc.cores = 5)
+
+cancer_recode_key <- c(cancer_names, "no cancer")
+names(cancer_recode_key) <- c(can_cols, "no_cancer")
+
+svy_totmcr_can <- rbindlist(svy_totmcr_can)
+svy_totmcr_can$cancer_type <- recode(svy_totmcr_can$cancer_type, !!!cancer_recode_key)
+svy_totmcr_can$cancer_type <- factor(svy_totmcr_can$cancer_type, levels = cancer_recode_key)
+svy_totmcr_can <- svy_totmcr_can[age_two_group != "0-17"]
+
+wt_totmcr_by_svy_can <- ggplot(data = svy_totmcr_can, 
+                               aes(y = totmcr_pce, x = svy_year)) + 
+  geom_bar(color = "yellowgreen", fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (totmcr_pce - 2 * se), ymax = (totmcr_pce + 2 * se)),
+                color = "yellowgreen", width = 0, position = position_dodge(0.75)) +  
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  xlab("Survey Year") + 
+  ylab("$") + 
+  ggtitle("Medicare Payment among Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  scale_y_continuous(labels = scales::comma) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+svy_totmcr_can[, n_se := paste0(format(round(totmcr_pce), big.mark = ","), "<br>(",
+                                format(round(se), big.mark = ","), ")")]
+svy_totmcr_can_wide <- dcast(svy_totmcr_can, svy_year ~ cancer_type, value.var = "n_se")
+
+output_list$wt_totmcr_by_svy_can <- svy_totmcr_can_wide
+
+plot_list$wt_totmcr_by_svy_can <- wt_totmcr_by_svy_can
+
+
+svy_totmcr_age_can <- mclapply(c(can_cols, "no_cancer"), function(x, outcome = "totmcr_pce", cond = "age65") {
+  calc_weighted_avg_exp(cancerx = x, outcome = outcome, cond = cond, svyds = svyds)
+}, mc.cores = 5)
+
+svy_totmcr_age_can <- rbindlist(svy_totmcr_age_can)
+svy_totmcr_age_can$cancer_type <- recode(svy_totmcr_age_can$cancer_type, !!!cancer_recode_key)
+svy_totmcr_age_can$cancer_type <- factor(svy_totmcr_age_can$cancer_type, levels = cancer_recode_key)
+svy_totmcr_age_can <- svy_totmcr_age_can[age65 != "0-17"]
+setnames(svy_totmcr_age_can, "age65", "age_group")
+
+
+wt_totmcr_by_age_can <- ggplot(data = svy_totmcr_age_can, 
+                               aes(y = totmcr_pce, x = svy_year)) + 
+  geom_bar(aes(color = age_group), fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (totmcr_pce - 2 * se), ymax = (totmcr_pce + 2 * se), 
+                    color = age_group),
+                width = 0, position = position_dodge(0.75)) +  
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  scale_color_manual(values = age_color[-1]) + 
+  xlab("Survey Year") + 
+  ylab("$") + 
+  ggtitle("Medicare Payment among Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  scale_y_continuous(labels = scales::comma) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+svy_totmcr_age_can[, v_se := paste0(format(round(totmcr_pce), big.mark = ","), "<br>(",
+                                    format(round(se), big.mark = ","), ")")]
+
+svy_totmcr_age_can_wide <- dcast(svy_totmcr_age_can, 
+                                 svy_year + age_group ~ cancer_type, 
+                                 value.var = "v_se")
+
+output_list$wt_totmcr_by_age_can <- svy_totmcr_age_can_wide
+
+plot_list$wt_totmcr_by_age_can <- wt_totmcr_by_age_can
+
+
+## Medicaid payment
+
+svy_totmcd_can <- mclapply(c(can_cols, "no_cancer"), function(x, outcome = "totmcd_pce", cond = "age_two_group") {
+  calc_weighted_avg_exp(cancerx = x, outcome = outcome, cond = cond, svyds = svyds)
+}, mc.cores = 5)
+
+cancer_recode_key <- c(cancer_names, "no cancer")
+names(cancer_recode_key) <- c(can_cols, "no_cancer")
+
+svy_totmcd_can <- rbindlist(svy_totmcd_can)
+svy_totmcd_can$cancer_type <- recode(svy_totmcd_can$cancer_type, !!!cancer_recode_key)
+svy_totmcd_can$cancer_type <- factor(svy_totmcd_can$cancer_type, levels = cancer_recode_key)
+svy_totmcd_can <- svy_totmcd_can[age_two_group != "0-17"]
+
+wt_totmcd_by_svy_can <- ggplot(data = svy_totmcd_can, 
+                               aes(y = totmcd_pce, x = svy_year)) + 
+  geom_bar(color = "yellowgreen", fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (totmcd_pce - 2 * se), ymax = (totmcd_pce + 2 * se)),
+                color = "yellowgreen", width = 0, position = position_dodge(0.75)) +  
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  xlab("Survey Year") + 
+  ylab("$") + 
+  ggtitle("Medicaid Payment among Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  scale_y_continuous(labels = scales::comma) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+svy_totmcd_can[, n_se := paste0(format(round(totmcd_pce), big.mark = ","), "<br>(",
+                                format(round(se), big.mark = ","), ")")]
+svy_totmcd_can_wide <- dcast(svy_totmcd_can, svy_year ~ cancer_type, value.var = "n_se")
+
+output_list$wt_totmcd_by_svy_can <- svy_totmcd_can_wide
+
+plot_list$wt_totmcd_by_svy_can <- wt_totmcd_by_svy_can
+
+
+svy_totmcd_age_can <- mclapply(c(can_cols, "no_cancer"), function(x, outcome = "totmcd_pce", cond = "age65") {
+  calc_weighted_avg_exp(cancerx = x, outcome = outcome, cond = cond, svyds = svyds)
+}, mc.cores = 5)
+
+svy_totmcd_age_can <- rbindlist(svy_totmcd_age_can)
+svy_totmcd_age_can$cancer_type <- recode(svy_totmcd_age_can$cancer_type, !!!cancer_recode_key)
+svy_totmcd_age_can$cancer_type <- factor(svy_totmcd_age_can$cancer_type, levels = cancer_recode_key)
+svy_totmcd_age_can <- svy_totmcd_age_can[age65 != "0-17"]
+setnames(svy_totmcd_age_can, "age65", "age_group")
+
+
+wt_totmcd_by_age_can <- ggplot(data = svy_totmcd_age_can, 
+                               aes(y = totmcd_pce, x = svy_year)) + 
+  geom_bar(aes(color = age_group), fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (totmcd_pce - 2 * se), ymax = (totmcd_pce + 2 * se), 
+                    color = age_group),
+                width = 0, position = position_dodge(0.75)) +  
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  scale_color_manual(values = age_color[-1]) + 
+  xlab("Survey Year") + 
+  ylab("$") + 
+  ggtitle("Medicaid Payment among Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  scale_y_continuous(labels = scales::comma) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+svy_totmcd_age_can[, v_se := paste0(format(round(totmcd_pce), big.mark = ","), "<br>(",
+                                    format(round(se), big.mark = ","), ")")]
+
+svy_totmcd_age_can_wide <- dcast(svy_totmcd_age_can, 
+                                 svy_year + age_group ~ cancer_type, 
+                                 value.var = "v_se")
+
+output_list$wt_totmcd_by_age_can <- svy_totmcd_age_can_wide
+
+plot_list$wt_totmcd_by_age_can <- wt_totmcd_by_age_can
 
 
 
+## Adjust loss of work days
+
+svy_ddnwrk_can <- mclapply(c(can_cols, "no_cancer"), function(x, outcome = "ddnwrk_recode", cond = "age_two_group") {
+  calc_weighted_avg_exp(cancerx = x, outcome = outcome, cond = cond, svyds = svyds)
+}, mc.cores = 5)
+
+cancer_recode_key <- c(cancer_names, "no cancer")
+names(cancer_recode_key) <- c(can_cols, "no_cancer")
+
+svy_ddnwrk_can <- rbindlist(svy_ddnwrk_can)
+svy_ddnwrk_can$cancer_type <- recode(svy_ddnwrk_can$cancer_type, !!!cancer_recode_key)
+svy_ddnwrk_can$cancer_type <- factor(svy_ddnwrk_can$cancer_type, levels = cancer_recode_key)
+svy_ddnwrk_can <- svy_ddnwrk_can[age_two_group != "0-17"]
+
+wt_ddnwrk_by_svy_can <- ggplot(data = svy_ddnwrk_can, 
+                               aes(y = ddnwrk_recode, x = svy_year)) + 
+  geom_bar(color = "yellowgreen", fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (ddnwrk_recode - 2 * se), ymax = (ddnwrk_recode + 2 * se)),
+                color = "yellowgreen", width = 0, position = position_dodge(0.75)) +  
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  xlab("Survey Year") + 
+  ylab("days") + 
+  ggtitle("Days Missed Work among Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  scale_y_continuous(labels = scales::comma) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+svy_ddnwrk_can[, n_se := paste0(format(round(ddnwrk_recode), big.mark = ","), "<br>(",
+                                format(round(se), big.mark = ","), ")")]
+svy_ddnwrk_can_wide <- dcast(svy_ddnwrk_can, svy_year ~ cancer_type, value.var = "n_se")
+
+output_list$wt_ddnwrk_by_svy_can <- svy_ddnwrk_can_wide
+
+plot_list$wt_ddnwrk_by_svy_can <- wt_ddnwrk_by_svy_can
 
 
+svy_ddnwrk_age_can <- mclapply(c(can_cols, "no_cancer"), function(x, outcome = "ddnwrk_recode", cond = "age65") {
+  calc_weighted_avg_exp(cancerx = x, outcome = outcome, cond = cond, svyds = svyds)
+}, mc.cores = 5)
+
+svy_ddnwrk_age_can <- rbindlist(svy_ddnwrk_age_can)
+svy_ddnwrk_age_can$cancer_type <- recode(svy_ddnwrk_age_can$cancer_type, !!!cancer_recode_key)
+svy_ddnwrk_age_can$cancer_type <- factor(svy_ddnwrk_age_can$cancer_type, levels = cancer_recode_key)
+svy_ddnwrk_age_can <- svy_ddnwrk_age_can[age65 != "0-17"]
+setnames(svy_ddnwrk_age_can, "age65", "age_group")
+
+
+wt_ddnwrk_by_age_can <- ggplot(data = svy_ddnwrk_age_can, 
+                               aes(y = ddnwrk_recode, x = svy_year)) + 
+  geom_bar(aes(color = age_group), fill = "white", stat = "identity", 
+           position = "dodge", width = 0.8, size = 0.8) + 
+  geom_errorbar(aes(ymin = (ddnwrk_recode - 2 * se), ymax = (ddnwrk_recode + 2 * se), 
+                    color = age_group),
+                width = 0, position = position_dodge(0.75)) +  
+  facet_wrap(.~cancer_type, ncol = 3, scales = "free_y") +
+  scale_color_manual(values = age_color[-1]) + 
+  xlab("Survey Year") + 
+  ylab("$") + 
+  ggtitle("Days Missed Work among Cancer Survivors 2008-2018 (weighted)") + 
+  scale_x_continuous(breaks = seq(2008, 2018, 1)) + 
+  scale_y_continuous(labels = scales::comma) + 
+  theme_bw() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 12, face = "bold", colour = "gray20"), 
+        axis.text.x = element_text(size = 10, angle = 60, hjust = 1), 
+        axis.text.y = element_text(size = 10), 
+        axis.title.x = element_text(size = 13), 
+        axis.title.y = element_text(size = 13), 
+        legend.position = "bottom")
+
+svy_ddnwrk_age_can[, v_se := paste0(format(round(ddnwrk_recode), big.mark = ","), "<br>(",
+                                    format(round(se), big.mark = ","), ")")]
+svy_ddnwrk_age_can_wide <- dcast(svy_ddnwrk_age_can, 
+                                 svy_year + age_group ~ cancer_type, 
+                                 value.var = "v_se")
+
+output_list$wt_ddnwrk_by_age_can <- svy_ddnwrk_age_can_wide
+
+plot_list$wt_ddnwrk_by_age_can <- wt_ddnwrk_by_age_can
+
+
+saveRDS(plot_list, "Results/plot_list.RDS")
+saveRDS(output_list, "Results/summary_out_list.RDS")
 
 
