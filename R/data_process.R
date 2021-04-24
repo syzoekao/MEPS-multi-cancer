@@ -32,7 +32,7 @@ fyc_all[, `:=` (perwt = perwtf / (max(svy_year) - min(svy_year) + 1),
                 ins_recode2 = ifelse(ins_recode == "1.Young, Any private", "<65, any private", 
                                      ifelse(ins_recode %in% c("2.Young, Public only", "3.Young, Uninsured"), "<65, other", 
                                             ifelse(ins_recode %in% c("4.65+, Medicare with all others", "5.65+, Any private, TRICARE/CHAMPVA"), 
-                                                   "65+, medicare and private","65+, other"))), 
+                                                   "65+, medicare and private", "65+, other"))), 
                 region_recode = factor(region_recode),
                 age_two_group = ifelse(ageg != "0-17", "18-85", "0-17"), 
                 married = ifelse(is.na(married), "Not married", married), 
@@ -41,6 +41,9 @@ fyc_all[, `:=` (perwt = perwtf / (max(svy_year) - min(svy_year) + 1),
                 tmp_marry_rd = NULL)]
 levels(fyc_all$sex_recode) <- c("male", "female")
 levels(fyc_all$region_recode) <- c("northeast", "midwest", "south", "west")
+
+
+
 
 output_list <- list()
 plot_list <- list()
@@ -189,6 +192,28 @@ calc_freq_by_char <- function(x, dt) {
   }
 }
 
+calc_freq_by_char_mutual_excl <- function(x, dt) {
+  if (x == "overall") {
+    out <- dt[ageg != "0-17", list(N = .N), by = can_cond1][order(can_cond1)]
+    tmp_fml<- as.formula(paste0(x, " ~ can_cond1"))
+    out_wide <- dcast(out, .~can_cond1)
+    out_wide[, `:=` (`.` = NULL)]
+    out_wide[, `:=` (category = "overall", 
+                level = "N")]
+    setcolorder(out_wide, c("category", "level"))
+  } else {
+    out <- dt[ageg != "0-17", list(N = .N), by = c("can_cond1", x)][
+                order(can_cond1, eval(parse(text = paste0(x))))]
+    out[, pct := paste0(round(100 * N / sum(N), 1), "%"), by = .(can_cond1)]
+    out[, n_pct := paste0(format(N, big.mark = ","), " (", pct, ")")]
+    tmp_fml<- as.formula(paste0(x, " ~ can_cond1"))
+    out_wide <- dcast(out, tmp_fml, value.var = "n_pct")
+    out_wide[, `:=` (category = x)]
+    setnames(out_wide, x, "level")
+    setcolorder(out_wide, c("category", "level"))
+  }
+}
+
 tmp_ls <- c("overall", "ageg", "sex_recode", "race_recode", "edu_recode", "married", "npec_recode", 
        "ins_recode", "income_level", "region_recode")
 
@@ -196,6 +221,13 @@ cancer_by_char <- lapply(tmp_ls, calc_freq_by_char, dt = fyc_all)
 cancer_by_char <- rbindlist(cancer_by_char)
 
 output_list$cancer_by_char <- cancer_by_char
+
+
+cancer_by_char2 <- lapply(tmp_ls, calc_freq_by_char_mutual_excl, dt = fyc_all)
+cancer_by_char2 <- rbindlist(cancer_by_char2)
+cancer_by_char2[, `:=` (multiple = NULL, other = NULL)]
+
+output_list$cancer_by_char2 <- cancer_by_char2
 
 ### By survey year
 
@@ -209,7 +241,16 @@ ct_long <- melt(cancer_by_svy_ct, id = c("svy_year"))
 levels(ct_long$variable) <- c(cancer_names)
 output_list$cancer_by_svy <- cancer_by_svy_ct
 
-uwt_N_by_svy_can <- ggplot(data = ct_long, 
+cancer_by_svy_ct2 <- fyc_all[ageg != "0-17", list(N = .N), 
+                            by = .(can_cond1, svy_year)][
+                              order(can_cond1, svy_year)][
+                                !can_cond1 %in% c("multiple", "other")]
+cancer_by_svy_ct2 <- dcast(cancer_by_svy_ct2, svy_year ~ can_cond1, value.var = "N")
+output_list$cancer_by_svy2 <- cancer_by_svy_ct2
+
+ct_long2 <- melt(cancer_by_svy_ct2, id = c("svy_year"))
+
+uwt_N_by_svy_can <- ggplot(data = ct_long2, 
                            aes(y = value, x = svy_year)) + 
   geom_bar(# aes(color = age_group), 
            color = "yellowgreen", 
@@ -245,7 +286,20 @@ setnames(ct_long, "age65", "age_group")
 
 output_list$cancer_by_svy_age_group <- cancer_by_svy_age65_ct[age65 != "0-17"]
 
-uwt_N_by_age_can <- ggplot(data = ct_long[age_group != "0-17"], 
+cancer_by_svy_age65_ct2 <- fyc_all[, list(N = .N), 
+                                  by = .(svy_year, age65, can_cond1)][
+                                    order(can_cond1, svy_year, age65)][
+                                      !can_cond1 %in% c("multiple", "other")]
+cancer_by_svy_age65_ct2 <- cancer_by_svy_age65_ct2[age65 %in% c("18-64", ">=65")]
+cancer_by_svy_age65_ct2 <- dcast(cancer_by_svy_age65_ct2, svy_year + age65 ~ can_cond1, value.var = "N")
+output_list$cancer_by_svy_age65_ct2 <- cancer_by_svy_age65_ct2
+
+ct_long2 <- melt(cancer_by_svy_age65_ct2, id = c("svy_year", "age65"))
+setnames(ct_long2, "age65", "age_group")
+
+output_list$cancer_by_svy_age_group2 <- cancer_by_svy_age65_ct2
+
+uwt_N_by_age_can <- ggplot(data = ct_long2, 
        aes(y = value, x = svy_year)) + 
   geom_bar(aes(color = age_group), 
            fill = "white", stat = "identity", 
@@ -445,6 +499,7 @@ fyc_all[, lapply(.SD, mean, na.rm = T),
         .SDcols = c("totexp_gdp", pce_tots), 
         .(svy_year)]
 
+saveRDS(fyc_all, "Data/fyc_all.RDS")
 
 ## Adjust total expense
 
