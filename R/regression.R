@@ -73,7 +73,7 @@ keep_vars <- c("varpsu", "varstr", "perwt", "svy_year", "year_center",
 
 new_fyc <- fyc_all[, ..keep_vars]
 
-rhs <- c("can_cond1", "ageg", "sex_recode", "ins_recode2", "race_recode", 
+rhs <- c("can_cond1", "ageg", "sex_recode", "race_recode", 
          "npec_recode", "region_recode", "edu_recode", "married", 
          "year_center")
 
@@ -318,6 +318,8 @@ saveRDS(save_ls, "Results/est_out.RDS")
 #### Making tables
 rm(list = ls())
 library(data.table)
+library(ggplot2)
+library(dplyr)
 
 source("R/function.R")
 
@@ -339,7 +341,6 @@ cost_dt <- lapply(c(1:nrow(cost_est)), function(x) {
 })
 cost_model <- rbindlist(lapply(cost_dt, `[[`, 1))
 cost_pred_margin <- rbindlist(lapply(cost_dt, `[[`, 2))
-
 
 key_exp <- exp_name_ls
 names(key_exp) <- exp_ls

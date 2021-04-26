@@ -182,7 +182,7 @@ calc_freq_by_char <- function(x, dt) {
               .SDcols = c(can_cols, "no_cancer")][
                 order(eval(parse(text = paste0(x))))]
     out <- melt(out, id.vars = x)
-    out[, pct := paste0(round(100 * value / sum(value), 1), "%"), by = c("variable")]
+    out[, pct := paste0(round(100 * value / sum(value), 2), "%"), by = c("variable")]
     out[, n_pct := paste0(format(value, big.mark = ","), " (", pct, ")")]
     tmp_fml<- as.formula(paste0(x, " ~ variable"))
     out_wide <- dcast(out, tmp_fml, value.var = "n_pct")
@@ -204,7 +204,7 @@ calc_freq_by_char_mutual_excl <- function(x, dt) {
   } else {
     out <- dt[ageg != "0-17", list(N = .N), by = c("can_cond1", x)][
                 order(can_cond1, eval(parse(text = paste0(x))))]
-    out[, pct := paste0(round(100 * N / sum(N), 1), "%"), by = .(can_cond1)]
+    out[, pct := paste0(round(100 * N / sum(N), 2), "%"), by = .(can_cond1)]
     out[, n_pct := paste0(format(N, big.mark = ","), " (", pct, ")")]
     tmp_fml<- as.formula(paste0(x, " ~ can_cond1"))
     out_wide <- dcast(out, tmp_fml, value.var = "n_pct")

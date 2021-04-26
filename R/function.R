@@ -5,7 +5,6 @@ library(data.table)
 
 age_color <- c("yellowgreen", "deepskyblue", "tomato")
 
-
 exp_ls <- c("totexp_gdp", "totslf_pce", "totprv_pce", "totmcr_pce", "totmcd_pce", 
             "tototr_pce", "ambexp_pce", "iptexp_pce", "rxexp_pce", "tototr2_pce")
 exp_name_ls <- c("total health care expenditures ($)", "OOP ($)", 
@@ -14,6 +13,9 @@ exp_name_ls <- c("total health care expenditures ($)", "OOP ($)",
                  "expenditures for ambulatory care ($)", "expenditures for inpatient care ($)", 
                  "expenditures for prescription medications ($)", "expenditures for other services ($)")
 
+## https://www.bls.gov/oes/tables.htm
+hr_wage <- 18.58
+annual_wage <- 38640
 
 quote_list <- function(x) {
   lapply(x, function(x) sym(toupper(x)))
@@ -549,8 +551,10 @@ cal_difference <- function(y, beta_zero, beta_non_zero = NULL,
     pred1 <- predict(mod_zero, newdata = model.frame(d1), design = d1, type = "response")
   }
   
-  pred_eff <- mean(pred1) - mean(pred0)
-  pred_eff
+  pred_cancer <- mean(pred1)
+  pred_no_cancer <- mean(pred0)
+  pred_eff <- pred_cancer - pred_no_cancer
+  return(c(pred_eff = pred_eff, pred_cancer = pred_cancer, pred_no_cancer = pred_no_cancer))
 }
 
 
@@ -584,24 +588,30 @@ estimate_me <- function(tmp_cond, df, m_zero, m_non_zero = NULL, n_sim = 50) {
     pred1 <- predict(m_zero, newdata = model.frame(d1), design = d1, type = "response") 
   }
 
-  ame <- mean(pred1) - mean(pred0)
+  pred_cancer <- mean(pred1)
+  pred_no_cancer <- mean(pred0)
+  ame <- pred_cancer - pred_no_cancer
+  pred_mean <- c(pred_eff = ame, pred_cancer = pred_cancer, pred_no_cancer = pred_no_cancer)  
   
   beg_time <- Sys.time()
-  sim_eff <- mclapply(c(1:n_sim), cal_difference, 
+  sim_res <- mclapply(c(1:n_sim), cal_difference, 
                       beta_zero = beta_zero, beta_non_zero = beta_non_zero, 
                       mod_zero = m_zero, mod_non_zero = m_non_zero,
                       d0 = d0, d1 = d1, mc.cores = 7)
   print(Sys.time() - beg_time)
   
-  sim_eff <- unlist(sim_eff)
-  se <- sd(sim_eff)
-  z <- ame / se
-  p <- 2 * pnorm(abs(z), lower.tail = F)
-  bd <- sort(ame + c(-1, 1) * qnorm(0.025) * se)
-  lb <- bd[1]
-  ub <- bd[2]
+  sim_res <- do.call(rbind, sim_res)
+  se_res <- apply(sim_res, 2, sd)
+  z_res <- pred_mean / se_res
+  p_res <- 2 * pnorm(abs(z_res), lower.tail = F)
+  bd <- matrix(rep(pred_mean, 2), nrow = 2, byrow = T) + 
+    t(t(c(-1, 1))) %*% (qnorm(0.975) * se_res)
   
-  return(c(ame = ame, se = se, z = z, lb = lb, ub = ub, p = p))
+  out_mat <- data.frame(t(rbind(pred_mean, se_res, z_res, p_res, bd)))
+  colnames(out_mat) <- c("mean", "se", "z", "p", "lb", "ub")
+  out_mat$cancer_condition <- tmp_cond
+  out_mat$stats <- c("ame", "pred_cancer", "pred_no_cancer")
+  return(out_mat)
 }
 
 
@@ -648,12 +658,8 @@ gamma_hurdle <- function(y, design, sel_age = "18-64", sex = NULL, rhs) {
                        m_zero = m_bin, m_non_zero = m_gamma, n_sim = 50)
   print(Sys.time() - beg_time)
   
-  names(can_me_out) <- can_vec
-  
-  can_me_out <- data.table(do.call(rbind, can_me_out))
-  can_me_out[, cancer_condition := can_vec]
-  colnames(can_me_out) <- gsub(".pred1", "", colnames(can_me_out))
-  setcolorder(can_me_out, c("cancer_condition"))
+  can_me_out <- rbindlist(can_me_out)
+  setcolorder(can_me_out, c("cancer_condition", "stats"))
   
   out_ls <- list(coef_bin = coef_bin, coef_gamma = coef_gamma, 
                  pred_margin = can_me_out)
@@ -687,13 +693,9 @@ logit <- function(y, design, sel_age = "18-64", sex = NULL, rhs) {
   can_me_out <- lapply(can_vec, estimate_me, df = subds, 
                        m_zero = m_bin, m_non_zero = NULL, n_sim = 50)
   print(Sys.time() - beg_time)
-  
-  names(can_me_out) <- can_vec
-  
-  can_me_out <- data.table(do.call(rbind, can_me_out))
-  can_me_out[, cancer_condition := can_vec]
-  colnames(can_me_out) <- gsub(".pred1", "", colnames(can_me_out))
-  setcolorder(can_me_out, c("cancer_condition"))
+
+  can_me_out <- rbindlist(can_me_out)
+  setcolorder(can_me_out, c("cancer_condition", "stats"))
   
   out_ls <- list(coef_bin = coef_bin, 
                  pred_margin = can_me_out)
@@ -723,6 +725,13 @@ nb_hurdle <- function(y, design, sel_age = "18-64", sex = NULL, rhs) {
   subds <- update(subds, ageg = droplevels(ageg))
   subds <- update(subds, can_cond1 = droplevels(can_cond1))
   subds <- update(subds, dum = ifelse(eval(parse(text = y)) > 0, 1, 0))
+  
+  subds <- update(subds, wgt = weights(subds) / mean(weights(subds)))
+  # subframe <- model.frame(subds)
+  # m_bin0 <- glm(fml, family = binomial(link = "logit"), data = subframe, weights = wgt, maxit = 100)
+  # m_nb0 <- glm.nb(fml, data = subframe[dum == 1,], weights = wgt)
+  
+  # https://rstudio-pubs-static.s3.amazonaws.com/254145_5f155cd97dfd46119e930778b9867d7e.html
   
   fml <- as.formula(paste0("dum ~ ", paste0(rhs, collapse = " + ")))
   m_bin <- svyglm(fml, family = binomial(link = "logit"), design = subds, maxit = 100)
@@ -767,12 +776,8 @@ nb_hurdle <- function(y, design, sel_age = "18-64", sex = NULL, rhs) {
                        m_zero = m_bin, m_non_zero = m_nb, n_sim = 50)
   print(Sys.time() - beg_time)
   
-  names(can_me_out) <- can_vec
-  
-  can_me_out <- data.table(do.call(rbind, can_me_out))
-  can_me_out[, cancer_condition := can_vec]
-  colnames(can_me_out) <- gsub(".pred1", "", colnames(can_me_out))
-  setcolorder(can_me_out, c("cancer_condition"))
+  can_me_out <- rbindlist(can_me_out)
+  setcolorder(can_me_out, c("cancer_condition", "stats"))
   
   out_ls <- list(coef_bin = coef_bin, coef_nb = coef_nb, 
                  pred_margin = can_me_out)
@@ -826,7 +831,6 @@ bind_estimates <- function(subpop, y = NULL, res) {
     m_combine[, p.value := ifelse(p.value < 0.001, "<0.001", paste0(round(p.value, 4)))]
   }
   
-  
   m_combine$term <- gsub("can_cond1", "cancer condition: ", m_combine$term)
   m_combine$term <- gsub("sex_recode", "", m_combine$term)
   m_combine$term <- gsub("ins_recode2", "insurance type: ", m_combine$term)
@@ -870,14 +874,28 @@ bind_estimates <- function(subpop, y = NULL, res) {
   } else {
     n_digit <- 2
   }
-  pred_margin[, margin := paste0(round(ame, n_digit), 
+  
+  if (grepl("unable_", subpop)) {
+    tmp_cols <- c("mean", "lb", "ub")
+    pred_margin[, (tmp_cols) := lapply(.SD, function(j) round(j * annual_wage, 0)), 
+                .SDcols = tmp_cols]
+  }
+  
+  if (grepl("wkday_", subpop)) {
+    tmp_cols <- c("mean", "lb", "ub")
+    pred_margin[, (tmp_cols) := lapply(.SD, function(j) round(j * 6 * hr_wage, 0)), 
+                .SDcols = tmp_cols]
+  }
+  
+  pred_margin[, margin := paste0(round(mean, n_digit), 
                                  " (", round(lb, n_digit), ", ", round(ub, n_digit), ")")]
   pred_margin[, p := ifelse(p < 0.001, "<0.001", paste0(round(p, 4)))]
-  pred_margin <- pred_margin[, .(cancer_condition, margin, p)]
+  pred_margin <- pred_margin[, .(cancer_condition, stats, margin, p, mean, lb, ub)]
   pred_margin[, `:=` (outcome = y, 
                       age = pop_age, 
                       pop = pop)]
-  setcolorder(pred_margin, c("outcome", "pop", "age", "cancer_condition", "margin", "p"))
+  setcolorder(pred_margin, c("outcome", "pop", "age", "cancer_condition", "stats", "margin", "p",
+                             "mean", "lb", "ub"))
   
   ## Plot data
   var_order <- unique(plot_dat$term)
@@ -892,9 +910,10 @@ subset_tables <- function(obj, outcome_sel, pop_sel, expenditure_margin = FALSE)
   sub_object <- obj[outcome %in% outcome_sel & pop %in% pop_sel]  
   
   if (any(grepl("margin", colnames(sub_object)))) {
+    sub_object <- sub_object[!cancer_condition %in% c("multiple", "other")]
     can_order <- unique(sub_object$cancer_condition)
     sub_object[, cancer_condition := factor(cancer_condition, levels = can_order)]
-    sub_object <- sub_object[order(pop, age, cancer_condition)]
+    sub_object <- sub_object[stats == "ame"][order(pop, age, cancer_condition)]
     
     sub_object <- dcast(sub_object, pop + age + outcome ~ cancer_condition, 
                         value.var = c("margin", "p"), fun.aggregate = toString)
@@ -944,13 +963,13 @@ plot_odds_ratio <- function(x, plot_dat_ls, tmp_ix) {
   
   if (grepl("Both Men and Women", gtitle)) {
     plot_dat <- plot_dat[!term %in% c("cancer condition: breast", "cancer condition: cervix", "cancer condition: prostate")]
-  } # else {
-    # if (grepl("Men", gtitle)) plot_dat <- plot_dat[!term %in% c("cancer condition: colorectal", "cancer condition: lung", "cancer condition: melanoma", 
-    #                                                             "cancer condition: nmsc/unknown", "cancer condition: multiple", "cancer condition: other")]
-    # if (grepl("Women", gtitle)) plot_dat <- plot_dat[!term %in% c("cancer condition: colorectal", "cancer condition: lung", "cancer condition: melanoma", 
-    #                                                               "cancer condition: nmsc/unknown", "cancer condition: prosta", 
-    #                                                               "cancer condition: multiple", "cancer condition: other")]
-  # }
+  } else {
+  if (grepl("Men", gtitle)) plot_dat <- plot_dat[!term %in% c("cancer condition: colorectal", "cancer condition: lung", "cancer condition: melanoma",
+                                                              "cancer condition: nmsc/unknown", "cancer condition: multiple", "cancer condition: other")]
+  if (grepl("Women", gtitle)) plot_dat <- plot_dat[!term %in% c("cancer condition: colorectal", "cancer condition: lung", "cancer condition: melanoma",
+                                                                "cancer condition: nmsc/unknown", "cancer condition: prosta",
+                                                                "cancer condition: multiple", "cancer condition: other")]
+  }
   
   var_order <- unique(plot_dat$term)
   plot_dat[, term := factor(term, levels = rev(var_order))]
