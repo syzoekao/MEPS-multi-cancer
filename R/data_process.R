@@ -227,6 +227,19 @@ cancer_by_char2 <- lapply(tmp_ls, calc_freq_by_char_mutual_excl, dt = fyc_all)
 cancer_by_char2 <- rbindlist(cancer_by_char2)
 cancer_by_char2[, `:=` (multiple = NULL, other = NULL)]
 
+cancer_by_char2_f <- lapply(tmp_ls, calc_freq_by_char_mutual_excl, dt = fyc_all[sex_recode == "female"])
+cancer_by_char2_f <- rbindlist(cancer_by_char2_f)
+cancer_by_char2_f <- cancer_by_char2_f[, .(category, level, `no cancer`)]
+colnames(cancer_by_char2_f)[colnames(cancer_by_char2_f) %in% "no cancer"] <- c("female: no cancer")
+
+cancer_by_char2_m <- lapply(tmp_ls, calc_freq_by_char_mutual_excl, dt = fyc_all[sex_recode == "male"])
+cancer_by_char2_m <- rbindlist(cancer_by_char2_m)
+cancer_by_char2_m <- cancer_by_char2_m[, .(category, level, `no cancer`)]
+colnames(cancer_by_char2_m)[colnames(cancer_by_char2_m) %in% "no cancer"] <- c("male: no cancer")
+
+cancer_by_char2 <- merge(cancer_by_char2, cancer_by_char2_f, by = c("category", "level"), all.x = T)
+cancer_by_char2 <- merge(cancer_by_char2, cancer_by_char2_m, by = c("category", "level"), all.x = T)
+
 output_list$cancer_by_char2 <- cancer_by_char2
 
 ### By survey year
