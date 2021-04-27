@@ -877,14 +877,22 @@ bind_estimates <- function(subpop, y = NULL, res) {
   
   if (grepl("unable_", subpop)) {
     tmp_cols <- c("mean", "lb", "ub")
-    pred_margin[, (tmp_cols) := lapply(.SD, function(j) round(j * annual_wage, 0)), 
+    pred_margin0 <- copy(pred_margin)
+    pred_margin0[, (tmp_cols) := lapply(.SD, function(j) round(j * annual_wage, 0)), 
                 .SDcols = tmp_cols]
+    pred_margin0[, stats := paste0(stats, "_per_capita")]
+    pred_margin[, (tmp_cols) := lapply(.SD, function(j) round(j * 100)), 
+                .SDcols = tmp_cols]
+    pred_margin <- rbindlist(list(pred_margin, pred_margin0))
   }
   
   if (grepl("wkday_", subpop)) {
     tmp_cols <- c("mean", "lb", "ub")
-    pred_margin[, (tmp_cols) := lapply(.SD, function(j) round(j * 6 * hr_wage, 0)), 
+    pred_margin0 <- copy(pred_margin)
+    pred_margin0[, (tmp_cols) := lapply(.SD, function(j) round(j * 6 * hr_wage, 0)), 
                 .SDcols = tmp_cols]
+    pred_margin0[, stats := paste0(stats, "_per_capita")]
+    pred_margin <- rbindlist(list(pred_margin, pred_margin0))
   }
   
   pred_margin[, margin := paste0(round(mean, n_digit), 
@@ -913,11 +921,16 @@ subset_tables <- function(obj, outcome_sel, pop_sel, expenditure_margin = FALSE)
     sub_object <- sub_object[!cancer_condition %in% c("multiple", "other")]
     can_order <- unique(sub_object$cancer_condition)
     sub_object[, cancer_condition := factor(cancer_condition, levels = can_order)]
-    sub_object <- sub_object[stats == "ame"][order(pop, age, cancer_condition)]
+    sub_object <- sub_object[stats %in% c("ame", "ame_per_capita")][order(pop, age, cancer_condition)]
     
-    sub_object <- dcast(sub_object, pop + age + outcome ~ cancer_condition, 
-                        value.var = c("margin", "p"), fun.aggregate = toString)
-    
+    if (any(grepl("per_capita", sub_object$stats))) {
+      sub_object <- dcast(sub_object, pop + age + stats + outcome ~ cancer_condition, 
+                          value.var = c("margin", "p"), fun.aggregate = toString)
+    } else {
+      sub_object <- dcast(sub_object, pop + age + outcome ~ cancer_condition, 
+                          value.var = c("margin", "p"), fun.aggregate = toString)
+    }
+     
     col_order <- c("pop", "age", "outcome", 
                    unlist(lapply(can_order, function(x) paste0(c("margin_", "p_"), x))))
     setcolorder(sub_object, col_order)
@@ -965,9 +978,9 @@ plot_odds_ratio <- function(x, plot_dat_ls, tmp_ix) {
     plot_dat <- plot_dat[!term %in% c("cancer condition: breast", "cancer condition: cervix", "cancer condition: prostate")]
   } else {
   if (grepl("Men", gtitle)) plot_dat <- plot_dat[!term %in% c("cancer condition: colorectal", "cancer condition: lung", "cancer condition: melanoma",
-                                                              "cancer condition: nmsc/unknown", "cancer condition: multiple", "cancer condition: other")]
+                                                              "cancer condition: nmsc", "cancer condition: unknown skin", "cancer condition: multiple", "cancer condition: other")]
   if (grepl("Women", gtitle)) plot_dat <- plot_dat[!term %in% c("cancer condition: colorectal", "cancer condition: lung", "cancer condition: melanoma",
-                                                                "cancer condition: nmsc/unknown", "cancer condition: prosta",
+                                                                "cancer condition: nmsc", "cancer condition: unknown skin", "cancer condition: prosta",
                                                                 "cancer condition: multiple", "cancer condition: other")]
   }
   
