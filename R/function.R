@@ -542,19 +542,31 @@ cal_difference <- function(y, beta_zero, beta_non_zero = NULL,
   if (!is.null(mod_non_zero)) mod_non_zero$coefficients <- beta_non_zero[y, ]
   
   if (!is.null(mod_non_zero)) {
-    pred0 <- predict(mod_zero, newdata = model.frame(d0), design = d0, type = "response") * 
+    predpoz0 <- predict(mod_zero, newdata = model.frame(d0), design = d0, type = "response")
+    predpoz1 <- predict(mod_zero, newdata = model.frame(d1), design = d1, type = "response")
+    
+    pred0 <- predpoz0 * 
       predict(mod_non_zero, newdata = model.frame(d0), design = d0, type = "response")
-    pred1 <- predict(mod_zero, newdata = model.frame(d1), design = d1, type = "response") * 
+    pred1 <- predpoz1 * 
       predict(mod_non_zero, newdata = model.frame(d1), design = d1, type = "response") 
   } else {
-    pred0 <- predict(mod_zero, newdata = model.frame(d0), design = d0, type = "response")
-    pred1 <- predict(mod_zero, newdata = model.frame(d1), design = d1, type = "response")
+    predpoz0 <- predict(mod_zero, newdata = model.frame(d0), design = d0, type = "response")
+    predpoz1 <- predict(mod_zero, newdata = model.frame(d1), design = d1, type = "response")
+    
+    pred0 <- predpoz0
+    pred1 <- predpoz1
   }
   
   pred_cancer <- mean(pred1)
   pred_no_cancer <- mean(pred0)
   pred_eff <- pred_cancer - pred_no_cancer
-  return(c(pred_eff = pred_eff, pred_cancer = pred_cancer, pred_no_cancer = pred_no_cancer))
+  
+  predpoz_cancer <- mean(predpoz1)
+  predpoz_no_cancer <- mean(predpoz0)
+  
+  return(c(pred_eff = pred_eff, pred_cancer = pred_cancer, 
+           pred_no_cancer = pred_no_cancer, 
+           predpoz_cancer = predpoz_cancer, predpoz_no_cancer = predpoz_no_cancer))
 }
 
 
@@ -579,19 +591,30 @@ estimate_me <- function(tmp_cond, df, m_zero, m_non_zero = NULL, n_sim = 50) {
   d1 <- update(df, can_cond1 = tmp_cond)
   
   if (!is.null(m_non_zero)) {
-    pred0 <- predict(m_zero, newdata = model.frame(d0), design = d0, type = "response") * 
+    predpoz0 <- predict(m_zero, newdata = model.frame(d0), design = d0, type = "response")
+    predpoz1 <- predict(m_zero, newdata = model.frame(d1), design = d1, type = "response")
+    
+    pred0 <- predpoz0 * 
       predict(m_non_zero, newdata = model.frame(d0), design = d0, type = "response")
-    pred1 <- predict(m_zero, newdata = model.frame(d1), design = d1, type = "response") * 
+    pred1 <- predpoz1 * 
       predict(m_non_zero, newdata = model.frame(d1), design = d1, type = "response")    
   } else {
-    pred0 <- predict(m_zero, newdata = model.frame(d0), design = d0, type = "response")
-    pred1 <- predict(m_zero, newdata = model.frame(d1), design = d1, type = "response") 
+    predpoz0 <- predict(m_zero, newdata = model.frame(d0), design = d0, type = "response")
+    predpoz1 <- predict(m_zero, newdata = model.frame(d1), design = d1, type = "response")
+    
+    pred0 <- predpoz0
+    pred1 <- predpoz1
   }
 
   pred_cancer <- mean(pred1)
   pred_no_cancer <- mean(pred0)
   ame <- pred_cancer - pred_no_cancer
-  pred_mean <- c(pred_eff = ame, pred_cancer = pred_cancer, pred_no_cancer = pred_no_cancer)  
+  
+  predpoz_cancer <- mean(predpoz1)
+  predpoz_no_cancer <- mean(predpoz0)
+  
+  pred_mean <- c(pred_eff = ame, pred_cancer = pred_cancer, pred_no_cancer = pred_no_cancer, 
+                 predpoz_cancer = predpoz_cancer, predpoz_no_cancer = predpoz_no_cancer)  
   
   beg_time <- Sys.time()
   sim_res <- mclapply(c(1:n_sim), cal_difference, 
@@ -610,7 +633,7 @@ estimate_me <- function(tmp_cond, df, m_zero, m_non_zero = NULL, n_sim = 50) {
   out_mat <- data.frame(t(rbind(pred_mean, se_res, z_res, p_res, bd)))
   colnames(out_mat) <- c("mean", "se", "z", "p", "lb", "ub")
   out_mat$cancer_condition <- tmp_cond
-  out_mat$stats <- c("ame", "pred_cancer", "pred_no_cancer")
+  out_mat$stats <- c("ame", "pred_cancer", "pred_no_cancer", "predpoz_cancer", "predpoz_no_cancer")
   return(out_mat)
 }
 
@@ -627,16 +650,13 @@ gamma_hurdle <- function(y, design, sel_age = "18-64", sex = NULL, rhs) {
   subds <- update(subds, dum = ifelse(eval(parse(text = y)) > 0, 1, 0))
   
   if (!is.null(sex)) rhs <- rhs[!rhs %in% "sex_recode"]
+  if (y %in% c("totexp_gdp")) {
+    rhs <- c(rhs, c("ins_recode2"))
+  }
   
   fml <- as.formula(paste0("dum ~ ", paste0(rhs, collapse = " + ")))
   m_bin <- svyglm(fml, family = binomial(link = "logit"), design = subds)
   
-  if (y == "totprv_pce" & sel_age == "18-64") rhs <- rhs[!rhs %in% c("ins_recode2")]
-  if (y == "rxexp_pce" & sel_age == "18-64" & !is.null(sex))  {
-    if (sex == "male") {
-      rhs <- rhs[!rhs %in% c("edu_recode")] # this is not significant
-    }
-  }
   fml <- as.formula(paste0(y, " ~ ", paste0(rhs, collapse = " + ")))
   m_gamma <- svyglm(fml, family = Gamma(link = "log"), design = subset(subds, dum == 1), maxit = 100)
   
@@ -674,6 +694,8 @@ logit <- function(y, design, sel_age = "18-64", sex = NULL, rhs) {
     subds <- subset(design, (exclude_set == 0 & age65 == sel_age) & sex_recode == sex)
   }
   if (!is.null(sex)) rhs <- rhs[!rhs %in% "sex_recode"]
+  
+  rhs <- c(rhs, "ins_recode2")
   
   fml <- as.formula(paste0("unable ~ ", paste0(rhs, collapse = " + ")))
   m_bin <- svyglm(fml, family = binomial(link = "logit"), design = subds, maxit = 100)
@@ -721,12 +743,14 @@ nb_hurdle <- function(y, design, sel_age = "18-64", sex = NULL, rhs) {
   }
   
   if (!is.null(sex)) rhs <- rhs[!rhs %in% "sex_recode"]
+  rhs <- c(rhs, "ins_recode2")
+  
   subds <- update(subds, ins_recode2 = droplevels(ins_recode2))
   subds <- update(subds, ageg = droplevels(ageg))
   subds <- update(subds, can_cond1 = droplevels(can_cond1))
   subds <- update(subds, dum = ifelse(eval(parse(text = y)) > 0, 1, 0))
   
-  subds <- update(subds, wgt = weights(subds) / mean(weights(subds)))
+  # subds <- update(subds, wgt = weights(subds) / mean(weights(subds)))
   # subframe <- model.frame(subds)
   # m_bin0 <- glm(fml, family = binomial(link = "logit"), data = subframe, weights = wgt, maxit = 100)
   # m_nb0 <- glm.nb(fml, data = subframe[dum == 1,], weights = wgt)
