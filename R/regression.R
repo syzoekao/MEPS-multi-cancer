@@ -473,6 +473,188 @@ table_ls$marg_wkday_male <- subset_tables(wkday_pred_margin, outcome_sel = "miss
 saveRDS(table_ls, "Results/est_table.RDS")
 
 
+#### Bar plots
+cost_me_no_cancer <- cost_pred_margin[stats == "pred_no_cancer" & 
+                                        (cancer_condition %in% c("colorectal", "breast", "prostate"))]
+
+ins_key <- c("Total expenditures", "OOP", "Private insurance", "Medicare", "Medicaid", "Other sources", 
+             "Ambulatory care", "Inpatient care", "Prescription medication", "Other services")
+names(ins_key) <- unique(cost_me_no_cancer$outcome)
+
+cost_me_no_cancer[, tot_exp := NA]
+cost_me_no_cancer$tot_exp[cost_me_no_cancer$age == "age 18-64"] <- cost_me_no_cancer$mean[cost_me_no_cancer$age == "age 18-64" & 
+                                                                                            cost_me_no_cancer$outcome == "totexp_gdp"]
+cost_me_no_cancer$tot_exp[cost_me_no_cancer$age == "age >=65"] <- cost_me_no_cancer$mean[cost_me_no_cancer$age == "age >=65" & 
+                                                                                            cost_me_no_cancer$outcome == "totexp_gdp"]
+
+for (j in c("age 18-64", "age >=65")) {
+  for (i in c("all", "female", "male")) {
+    cost_me_no_cancer$tot_exp[cost_me_no_cancer$age == j & 
+                                cost_me_no_cancer$pop == i] <- 
+      cost_me_no_cancer$mean[cost_me_no_cancer$age == j & 
+                               cost_me_no_cancer$outcome == "totexp_gdp" & 
+                               cost_me_no_cancer$pop == i] 
+  }
+}
+
+
+cost_me_no_cancer[, type := ifelse(outcome == "totexp_gdp", "Total spending", 
+                                   ifelse(outcome %in% c("totslf_pce", "totprv_pce", "totmcr_pce", "totmcd_pce", "tototr_pce"), 
+                                          "Source of payments", "Type of services"))]
+cost_me_no_cancer[, sum_exp := sum(mean), by = .(age, pop, type)]
+cost_me_no_cancer[, y := mean / sum_exp * tot_exp]
+cost_me_no_cancer <- cost_me_no_cancer[outcome != "totexp_gdp"]
+cost_me_no_cancer[, type_spending := recode_factor(outcome, !!!ins_key)]
+cost_me_no_cancer[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+cost_me_no_cancer[, cancer_condition := "no cancer"]
+
+cost_me_cancer <- cost_pred_margin[stats == "pred_cancer"]
+cost_me_cancer <- cost_me_cancer[!cancer_condition %in% c("other", "multiple")]
+cost_me_cancer[, tot_exp := NA]
+can_vec <- unique(cost_me_cancer$cancer_condition)
+
+for (j in c("age 18-64", "age >=65")) {
+  for (i in can_vec) {
+    cost_me_cancer$tot_exp[cost_me_cancer$age == j & 
+                             cost_me_cancer$cancer_condition == i] <- 
+      cost_me_cancer$mean[cost_me_cancer$age == j & 
+                            cost_me_cancer$outcome == "totexp_gdp" & 
+                            cost_me_cancer$cancer_condition == i] 
+  }
+}
+
+cost_me_cancer[, type := ifelse(outcome == "totexp_gdp", "Total spending", 
+                                   ifelse(outcome %in% c("totslf_pce", "totprv_pce", "totmcr_pce", "totmcd_pce", "tototr_pce"), 
+                                          "Source of payments", "Type of services"))]
+cost_me_cancer[, sum_exp := sum(mean), by = .(age, cancer_condition, type)]
+cost_me_cancer[, y := mean / sum_exp * tot_exp]
+cost_me_cancer <- cost_me_cancer[outcome != "totexp_gdp"]
+cost_me_cancer[, type_spending := recode_factor(outcome, !!!ins_key)]
+cost_me_cancer[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+
+cost_me <- rbindlist(list(cost_me_no_cancer, cost_me_cancer))
+cost_me[, cancer_site := ifelse(pop == "female" & cancer_condition == "no cancer", "Women: no cancer", 
+                                ifelse(pop == "male" & cancer_condition == "no cancer", "Men: no cancer", cancer_condition))]
+
+can_order <- c("No cancer", "Lung", "Colorectal", "Melanoma", 
+               "Nonmelanoma", "Unknown\nskin", "Women:\nno cancer", "Breast", "Cervix", 
+               "Men:\nno cancer", "Prostate")
+names(can_order) <- c("no cancer", "lung", "colorectal", "melanoma", "nmsc", "unknown skin", 
+                      "Women: no cancer", "breast", "cervix", "Men: no cancer", "prostate")
+cost_me[, cancer_site := recode_factor(cancer_site, !!!can_order)]
+cost_me[, pop := ifelse(pop == "all", "Both men and women", 
+                        ifelse(pop == "female", "Women", "Men"))]
+
+
+ggplot(data = cost_me[type == "Source of payments"]) + 
+  geom_bar(aes(x = cancer_site, y = y, fill = type_spending), 
+           color = "white", position = "stack", stat = "identity") + 
+  scale_fill_manual(values = c("deepskyblue", "yellow green", "darkgoldenrod2", "tomato", "plum3")) + 
+  scale_y_continuous(labels = scales::comma) + 
+  ylab("Total adjusted health care expenditures ($)") + 
+  facet_grid(age ~ pop, scales = "free_x", space = "free") + 
+  theme_classic() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.text.y = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.background = element_blank(),
+        # panel.border = element_rect(colour = "black", fill = NA), 
+        panel.border = element_blank(), 
+        panel.grid.major.y = element_blank(), 
+        panel.spacing = unit(0, "mm"),        
+        axis.text.x = element_text(size = 10), #, angle = 30, vjust = 0.6), 
+        axis.text.y = element_text(size = 12), 
+        axis.title.x = element_blank(), 
+        axis.title.y = element_text(size = 14), 
+        legend.position = "bottom") 
+ggsave("Writing/adj_source_payments.tiff", width = 10, height = 8)
+
+
+ggplot(data = cost_me[type == "Type of services"]) + 
+  geom_bar(aes(x = cancer_site, y = y, fill = type_spending), 
+           color = "white", position = "stack", stat = "identity") + 
+  scale_fill_manual(values = c("deepskyblue", "yellow green", "darkgoldenrod2", "tomato", "plum3")) + 
+  scale_y_continuous(labels = scales::comma) + 
+  ylab("Total adjusted health care expenditures ($)") + 
+  facet_grid(age ~ pop, scales = "free_x", space = "free") + 
+  theme_classic() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.text.y = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.background = element_blank(),
+        # panel.border = element_rect(colour = "black", fill = NA), 
+        panel.border = element_blank(), 
+        panel.grid.major.y = element_blank(), 
+        panel.spacing = unit(0, "mm"),        
+        axis.text.x = element_text(size = 10), #, angle = 30, vjust = 0.6), 
+        axis.text.y = element_text(size = 12), 
+        axis.title.x = element_blank(), 
+        axis.title.y = element_text(size = 14), 
+        legend.position = "bottom") 
+ggsave("Writing/adj_type_services.tiff", width = 10, height = 8)
+
+
+
+unable_me_cancer <- unable_pred_margin[stats == "pred_cancer_per_capita"]
+unable_me_cancer[, type := "Productivity loss"]
+wkday_me_cancer <- wkday_pred_margin[stats == "pred_cancer_per_capita"]
+wkday_me_cancer[, type := "Productivity loss"]
+
+cost_me_cancer <- cost_pred_margin[stats == "pred_cancer" & 
+                                     !(cancer_condition %in% c("no cancer", "multiple", "other")) & 
+                                     outcome == "totexp_gdp"]
+cost_me_cancer[, type := "Medical expenditure"]
+
+prod_loss <- rbindlist(list(unable_me_cancer, wkday_me_cancer, cost_me_cancer))
+prod_loss <- prod_loss[, list(mean = sum(mean)), by = .(pop, age, cancer_condition, type)]
+
+prod_loss[, cancer_site := ifelse(pop == "female" & cancer_condition == "no cancer", "Women: no cancer", 
+                                ifelse(pop == "male" & cancer_condition == "no cancer", "Men: no cancer", cancer_condition))]
+
+can_order <- c("No cancer", "Lung", "Colorectal", "Melanoma", 
+               "Nonmelanoma", "Unknown\nskin", "Women:\nno cancer", "Breast", "Cervix", 
+               "Men:\nno cancer", "Prostate")
+names(can_order) <- c("no cancer", "lung", "colorectal", "melanoma", "nmsc", "unknown skin", 
+                      "Women: no cancer", "breast", "cervix", "Men: no cancer", "prostate")
+prod_loss[, cancer_site := recode_factor(cancer_site, !!!can_order)]
+prod_loss[, pop := ifelse(pop == "all", "Both men and women", 
+                        ifelse(pop == "female", "Women", "Men"))]
+prod_loss <- prod_loss[!cancer_condition %in% c("other", "multiple")]
+prod_loss[, type := factor(type, levels = c("Productivity loss", "Medical expenditure"))]
+prod_loss[, prop := round(mean/sum(mean), 3) * 100, by = .(pop, age, cancer_condition)]
+prod_loss[, value := paste0(round(mean/sum(mean) * 100, 1), "%"), by = .(pop, age, cancer_condition)]
+prod_loss[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+
+ggplot(data = prod_loss) + 
+  geom_bar(aes(x = cancer_site, y = prop, fill = type), 
+           color = "white", position = "stack", stat = "identity") + 
+  scale_fill_manual(values = c("deepskyblue", "yellow green")) + 
+  scale_y_continuous(labels = scales::comma) + 
+  ylab("%") + 
+  geom_text(aes(x = cancer_site, y = prop, label = value, group = type),
+            position = position_stack(vjust = .5)) + 
+  facet_grid(age ~ pop, scales = "free_x", space = "free") + 
+  theme_classic() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.text.y = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.background = element_blank(),
+        # panel.border = element_rect(colour = "black", fill = NA), 
+        panel.border = element_blank(), 
+        panel.grid.major.y = element_blank(), 
+        panel.spacing = unit(0, "mm"),        
+        axis.text.x = element_text(size = 10), #, angle = 30, vjust = 0.6), 
+        axis.text.y = element_text(size = 12), 
+        axis.title.x = element_blank(), 
+        axis.title.y = element_text(size = 14), 
+        legend.position = "bottom") 
+ggsave("Writing/adj_prod_loss.tiff", width = 10, height = 8)
+
+
+
+
+
+
 
 
 
