@@ -624,22 +624,23 @@ prod_loss[, type := factor(type, levels = c("Productivity loss", "Medical expend
 prod_loss[, prop := round(mean/sum(mean), 3) * 100, by = .(pop, age, cancer_condition)]
 prod_loss[, value := paste0(round(mean/sum(mean) * 100, 1), "%"), by = .(pop, age, cancer_condition)]
 prod_loss[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+prod_loss[, tot_loss := ceiling(sum(mean)/100) * 100 * 1.1, by = .(pop, age, cancer_condition)]
+prod_loss[, tot_loss_value := paste0("$", format(round(sum(mean), 0), big.mark = ",")), by = .(pop, age, cancer_condition)]
 
 ggplot(data = prod_loss) + 
-  geom_bar(aes(x = cancer_site, y = prop, fill = type), 
+  geom_bar(aes(x = cancer_site, y = mean, fill = type), 
            color = "white", position = "stack", stat = "identity") + 
   scale_fill_manual(values = c("deepskyblue", "yellow green")) + 
   scale_y_continuous(labels = scales::comma) + 
-  ylab("%") + 
-  geom_text(aes(x = cancer_site, y = prop, label = value, group = type),
+  ylab("Total annual economic burden ($)") + 
+  geom_text(aes(x = cancer_site, y = mean, label = value, group = type),
             position = position_stack(vjust = .5)) + 
+  geom_text(aes(x = cancer_site, y = tot_loss, label = tot_loss_value)) + 
   facet_grid(age ~ pop, scales = "free_x", space = "free") + 
   theme_classic() + 
   theme(plot.title = element_text(size = 16, hjust = 0.5), 
         strip.text.x = element_text(size = 16, face = "bold", colour = "gray20"), 
         strip.text.y = element_text(size = 16, face = "bold", colour = "gray20"), 
-        strip.background = element_blank(),
-        # panel.border = element_rect(colour = "black", fill = NA), 
         panel.border = element_blank(), 
         panel.grid.major.y = element_blank(), 
         panel.spacing = unit(0, "mm"),        
@@ -653,8 +654,181 @@ ggsave("Writing/adj_prod_loss.tiff", width = 10, height = 8)
 
 
 
+# Probabilities of any positive expenditures
+
+costpoz_no_cancer <- cost_pred_margin[stats == "predpoz_no_cancer" & 
+                                        (cancer_condition %in% c("colorectal", "breast", "prostate"))]
+
+ins_key <- c("Total expenditures", "OOP", "Private insurance", "Medicare", "Medicaid", "Other sources", 
+             "Ambulatory care", "Inpatient care", "Prescription medication", "Other services")
+names(ins_key) <- unique(costpoz_no_cancer$outcome)
+
+costpoz_no_cancer <- costpoz_no_cancer[outcome == "totexp_gdp"]
+costpoz_no_cancer[, type := "Total expenditures"]
+costpoz_no_cancer[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+costpoz_no_cancer[, cancer_condition := "no cancer"]
+
+costpoz_cancer <- cost_pred_margin[stats == "predpoz_cancer"]
+costpoz_cancer <- costpoz_cancer[!cancer_condition %in% c("other", "multiple")]
+costpoz_cancer <- costpoz_cancer[outcome == "totexp_gdp"]
+costpoz_cancer[, type := "Total expenditures"]
+costpoz_cancer[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+
+costpoz <- rbindlist(list(costpoz_no_cancer, costpoz_cancer))
+costpoz[, cancer_site := ifelse(pop == "female" & cancer_condition == "no cancer", "Women: no cancer", 
+                                ifelse(pop == "male" & cancer_condition == "no cancer", "Men: no cancer", cancer_condition))]
+
+can_order <- c("No cancer", "Lung", "Colorectal", "Melanoma", 
+               "Nonmelanoma", "Unknown\nskin", "Women:\nno cancer", "Breast", "Cervix", 
+               "Men:\nno cancer", "Prostate")
+names(can_order) <- c("no cancer", "lung", "colorectal", "melanoma", "nmsc", "unknown skin", 
+                      "Women: no cancer", "breast", "cervix", "Men: no cancer", "prostate")
+costpoz[, cancer_site := recode_factor(cancer_site, !!!can_order)]
+costpoz[, pop := ifelse(pop == "all", "Both men and women", 
+                        ifelse(pop == "female", "Women", "Men"))]
+costpoz[, prop := mean * 100]
+costpoz[, lb := lb*100]
+costpoz[, ub := ub*100]
+costpoz[, value := paste0(round(mean, 3)*100, "%")]
 
 
+g1 <- ggplot(data = costpoz) + 
+  geom_bar(aes(x = cancer_site, y = prop, fill = pop), 
+           color = "white", position = "stack", stat = "identity") + 
+  geom_errorbar(aes(x = cancer_site, ymin = lb, ymax = ub, group = pop), width=.2,
+                position=position_dodge(.9)) + 
+  scale_fill_manual(values = c("deepskyblue", "yellow green", "plum3")) + 
+  ylab("Probability (%)") + 
+  ggtitle("(A) Adjusted probability of having any medical expenditures") + 
+  geom_text(aes(x = cancer_site, y = prop, label = value),
+            position = position_stack(vjust = .5)) + 
+  facet_grid(age ~ pop, scales = "free_x", space = "free") + 
+  theme_classic() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.text.y = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.background = element_blank(),
+        panel.border = element_blank(), 
+        panel.grid.major.y = element_blank(), 
+        panel.spacing = unit(0, "mm"),        
+        axis.text.x = element_text(size = 10), #, angle = 30, vjust = 0.6), 
+        axis.text.y = element_text(size = 12), 
+        axis.title.x = element_blank(), 
+        axis.title.y = element_text(size = 14), 
+        legend.position = "right") 
+# ggsave("Writing/prob_expenditure.tiff", width = 10, height = 8)
+
+
+
+
+unablepoz_no_cancer <- unable_pred_margin[stats == "predpoz_no_cancer" & 
+                                        (cancer_condition %in% c("colorectal", "breast", "prostate"))]
+unablepoz_no_cancer[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+unablepoz_no_cancer[, cancer_condition := "no cancer"]
+
+unablepoz_cancer <- unable_pred_margin[stats == "predpoz_cancer"]
+unablepoz_cancer <- unablepoz_cancer[!cancer_condition %in% c("other", "multiple")]
+unablepoz_cancer[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+
+unablepoz <- rbindlist(list(unablepoz_no_cancer, unablepoz_cancer))
+unablepoz[, cancer_site := ifelse(pop == "female" & cancer_condition == "no cancer", "Women: no cancer", 
+                                ifelse(pop == "male" & cancer_condition == "no cancer", "Men: no cancer", cancer_condition))]
+
+can_order <- c("No cancer", "Lung", "Colorectal", "Melanoma", 
+               "Nonmelanoma", "Unknown\nskin", "Women:\nno cancer", "Breast", "Cervix", 
+               "Men:\nno cancer", "Prostate")
+names(can_order) <- c("no cancer", "lung", "colorectal", "melanoma", "nmsc", "unknown skin", 
+                      "Women: no cancer", "breast", "cervix", "Men: no cancer", "prostate")
+unablepoz[, cancer_site := recode_factor(cancer_site, !!!can_order)]
+unablepoz[, pop := ifelse(pop == "all", "Both men and women", 
+                        ifelse(pop == "female", "Women", "Men"))]
+unablepoz[, prop := mean]
+unablepoz[, value := paste0(round(mean, 3), "%")]
+
+
+g2 <- ggplot(data = unablepoz) + 
+  geom_bar(aes(x = cancer_site, y = prop, fill = pop), 
+           color = "white", position = "stack", stat = "identity") + 
+  geom_errorbar(aes(x = cancer_site, ymin = lb, ymax = ub, group = pop), width=.2,
+                position=position_dodge(.9)) + 
+  scale_fill_manual(values = c("deepskyblue", "yellow green", "plum3")) + 
+  ylab("Probability (%)") + 
+  ggtitle("(B) Adjusted probability of employment disability") + 
+  geom_text(aes(x = cancer_site, y = prop, label = value),
+            position = position_stack(vjust = .5)) + 
+  facet_grid(age ~ pop, scales = "free_x", space = "free") + 
+  theme_classic() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.text.y = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.background = element_blank(),
+        panel.border = element_blank(), 
+        panel.grid.major.y = element_blank(), 
+        panel.spacing = unit(0, "mm"),        
+        axis.text.x = element_text(size = 10), #, angle = 30, vjust = 0.6), 
+        axis.text.y = element_text(size = 12), 
+        axis.title.x = element_blank(), 
+        axis.title.y = element_text(size = 14), 
+        legend.position = "right") 
+# ggsave("Writing/prob_unable.tiff", width = 10, height = 8)
+
+
+
+daypoz_no_cancer <- wkday_pred_margin[stats == "predpoz_no_cancer" & 
+                                            (cancer_condition %in% c("colorectal", "breast", "prostate"))]
+daypoz_no_cancer[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+daypoz_no_cancer[, cancer_condition := "no cancer"]
+
+daypoz_cancer <- wkday_pred_margin[stats == "predpoz_cancer"]
+daypoz_cancer <- daypoz_cancer[!cancer_condition %in% c("other", "multiple")]
+daypoz_cancer[, age := factor(age, levels = c("age 18-64", "age >=65"))]
+
+daypoz <- rbindlist(list(daypoz_no_cancer, daypoz_cancer))
+daypoz[, cancer_site := ifelse(pop == "female" & cancer_condition == "no cancer", "Women: no cancer", 
+                                  ifelse(pop == "male" & cancer_condition == "no cancer", "Men: no cancer", cancer_condition))]
+
+can_order <- c("No cancer", "Lung", "Colorectal", "Melanoma", 
+               "Nonmelanoma", "Unknown\nskin", "Women:\nno cancer", "Breast", "Cervix", 
+               "Men:\nno cancer", "Prostate")
+names(can_order) <- c("no cancer", "lung", "colorectal", "melanoma", "nmsc", "unknown skin", 
+                      "Women: no cancer", "breast", "cervix", "Men: no cancer", "prostate")
+daypoz[, cancer_site := recode_factor(cancer_site, !!!can_order)]
+daypoz[, pop := ifelse(pop == "all", "Both men and women", 
+                          ifelse(pop == "female", "Women", "Men"))]
+daypoz[, prop := mean * 100]
+daypoz[, lb := lb * 100]
+daypoz[, ub := ub * 100]
+daypoz[, value := paste0(round(mean, 3) * 100, "%")]
+
+
+g3 <- ggplot(data = daypoz) + 
+  geom_bar(aes(x = cancer_site, y = prop, fill = pop), 
+           color = "white", position = "stack", stat = "identity") + 
+  geom_errorbar(aes(x = cancer_site, ymin = lb, ymax = ub, group = pop), width=.2,
+                position=position_dodge(.9)) + 
+  scale_fill_manual(values = c("deepskyblue", "yellow green", "plum3")) + 
+  ylab("Probability (%)") + 
+  ggtitle("(C) Adjusted probability of having any work-loss days") + 
+  geom_text(aes(x = cancer_site, y = prop, label = value),
+            position = position_stack(vjust = .5)) + 
+  facet_grid(age ~ pop, scales = "free_x", space = "free") + 
+  theme_classic() + 
+  theme(plot.title = element_text(size = 16, hjust = 0.5), 
+        strip.text.x = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.text.y = element_text(size = 16, face = "bold", colour = "gray20"), 
+        strip.background = element_blank(),
+        panel.border = element_blank(), 
+        panel.grid.major.y = element_blank(), 
+        panel.spacing = unit(0, "mm"),        
+        axis.text.x = element_text(size = 10), #, angle = 30, vjust = 0.6), 
+        axis.text.y = element_text(size = 12), 
+        axis.title.x = element_blank(), 
+        axis.title.y = element_text(size = 14), 
+        legend.position = "right") 
+# ggsave("Writing/prob_wkdays.tiff", width = 10, height = 8)
+
+ggarrange(g1, g2, g3, nrow = 3, align = c("hv"), common.legend = T)
+ggsave("Writing/probs.tiff", width = 12, height = 14)
 
 
 

@@ -30,6 +30,14 @@ split_quote_list <- function(x) {
   quote_list(split_set)
 }
 
+#' @title Clean, shape and construct the full-year consolidate (FYC) data files
+#' @param yr last two digits of the survey years, e.g., "17"
+#' @param data_path the directory of the FYC files
+#' @param mutual_exclude_can if `TRUE`, create categorical variables `can_cond1` and `can_cond2` that 
+#' treat the cancer conditions as mutually exclusive status in the dataset. In this case, individuals 
+#' with multiple cancer diagnoses were regarded as 
+#' If `FALSE`,  
+#' 
 get_fyc_annual <- function(yr, data_path, mutual_exclude_can = TRUE) {
   # data_path <- "MEPS data/"
   # yr <- "17"
