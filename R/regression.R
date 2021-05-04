@@ -544,14 +544,18 @@ names(can_order) <- c("no cancer", "lung", "colorectal", "melanoma", "nmsc", "un
 cost_me[, cancer_site := recode_factor(cancer_site, !!!can_order)]
 cost_me[, pop := ifelse(pop == "all", "Both men and women", 
                         ifelse(pop == "female", "Women", "Men"))]
+cost_me[, prop_y := mean / sum_exp]
+cost_me[, value := paste0(round(mean / sum_exp * 100, 1), "%")]
 
 
 ggplot(data = cost_me[type == "Source of payments"]) + 
-  geom_bar(aes(x = cancer_site, y = y, fill = type_spending), 
-           color = "white", position = "stack", stat = "identity") + 
+  geom_bar(aes(x = cancer_site, y = prop_y, fill = type_spending), 
+           color = "white", position = "stack", stat = "identity", alpha = 0.8) + 
   scale_fill_manual(values = c("deepskyblue", "yellow green", "darkgoldenrod2", "tomato", "plum3")) + 
-  scale_y_continuous(labels = scales::comma) + 
-  ylab("Total adjusted health care expenditures ($)") + 
+  scale_y_continuous(labels = scales::percent) + 
+  geom_text(aes(x = cancer_site, y = prop_y, label = value, group = type_spending), 
+            size = 3.5, position = position_stack(vjust = 0.5)) + 
+  # ylab("Total adjusted health care expenditures ($)") + 
   facet_grid(age ~ pop, scales = "free_x", space = "free") + 
   theme_classic() + 
   theme(plot.title = element_text(size = 16, hjust = 0.5), 
@@ -565,17 +569,19 @@ ggplot(data = cost_me[type == "Source of payments"]) +
         axis.text.x = element_text(size = 10), #, angle = 30, vjust = 0.6), 
         axis.text.y = element_text(size = 12), 
         axis.title.x = element_blank(), 
-        axis.title.y = element_text(size = 14), 
+        axis.title.y = element_blank(), 
         legend.position = "bottom") 
 ggsave("Writing/adj_source_payments.tiff", width = 10, height = 8)
 
 
 ggplot(data = cost_me[type == "Type of services"]) + 
-  geom_bar(aes(x = cancer_site, y = y, fill = type_spending), 
-           color = "white", position = "stack", stat = "identity") + 
+  geom_bar(aes(x = cancer_site, y = prop_y, fill = type_spending), 
+           color = "white", position = "stack", stat = "identity", alpha = 0.8) + 
   scale_fill_manual(values = c("deepskyblue", "yellow green", "darkgoldenrod2", "tomato", "plum3")) + 
-  scale_y_continuous(labels = scales::comma) + 
-  ylab("Total adjusted health care expenditures ($)") + 
+  scale_y_continuous(labels = scales::percent) + 
+  geom_text(aes(x = cancer_site, y = prop_y, label = value, group = type_spending), 
+            size = 3.5, position = position_stack(vjust = 0.5)) + 
+  # ylab("Total adjusted health care expenditures ($)") + 
   facet_grid(age ~ pop, scales = "free_x", space = "free") + 
   theme_classic() + 
   theme(plot.title = element_text(size = 16, hjust = 0.5), 
@@ -589,7 +595,7 @@ ggplot(data = cost_me[type == "Type of services"]) +
         axis.text.x = element_text(size = 10), #, angle = 30, vjust = 0.6), 
         axis.text.y = element_text(size = 12), 
         axis.title.x = element_blank(), 
-        axis.title.y = element_text(size = 14), 
+        axis.title.y = element_blank(), 
         legend.position = "bottom") 
 ggsave("Writing/adj_type_services.tiff", width = 10, height = 8)
 
@@ -648,8 +654,8 @@ ggplot(data = prod_loss) +
         axis.text.y = element_text(size = 12), 
         axis.title.x = element_blank(), 
         axis.title.y = element_text(size = 14), 
-        legend.position = "bottom") 
-ggsave("Writing/adj_prod_loss.tiff", width = 10, height = 8)
+        legend.position = "right") 
+ggsave("Writing/adj_prod_loss.tiff", width = 12, height = 6)
 
 
 
@@ -828,7 +834,7 @@ g3 <- ggplot(data = daypoz) +
 # ggsave("Writing/prob_wkdays.tiff", width = 10, height = 8)
 
 ggarrange(g1, g2, g3, nrow = 3, align = c("hv"), common.legend = T)
-ggsave("Writing/probs.tiff", width = 12, height = 14)
+ggsave("Writing/probs.tiff", width = 14, height = 10)
 
 
 
